@@ -1,0 +1,12 @@
+# Domain-randomization sweep for the built-in Reach2D simulator.
+# The same structure works for Isaac Lab once each parameter has a setter.
+seed: 7
+episodes: 300
+task: "move the end effector to the target"
+params:
+  friction:      {uniform: [0.2, 1.2]}
+  mass:          {uniform: [0.5, 2.0]}
+  actuator_gain: {uniform: [0.6, 1.2]}
+  sensor_noise:  {uniform: [0.0, 0.04]}
+  action_delay:  {choice: [0, 1, 2, 4]}
+  obstacle:      {choice: [false, true], weights: [0.6, 0.4]}
