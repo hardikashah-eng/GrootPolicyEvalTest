@@ -1,0 +1,9 @@
+# Candidate physics for `groot-eval replay --config`: every grid cell is replayed
+# against the recorded trajectories and ranked by tracking error.
+# Leave measurement noise out: fit it with `groot-eval gap` instead.
+mode: grid
+grid_points: 6
+params:
+  friction:      {uniform: [0.4, 1.4]}
+  actuator_gain: {uniform: [0.7, 1.2]}
+  action_delay:  {choice: [0, 1, 2, 3]}

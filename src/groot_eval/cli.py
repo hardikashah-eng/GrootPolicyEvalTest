@@ -65,6 +65,16 @@ def _recorder(a: argparse.Namespace, env: Any, policy: Any):
     return TraceRecorder(domain="sim", env=a.env, policy=getattr(policy, "name", a.policy), control_dt=getattr(env, "dt", None))
 
 
+def _latency(a: argparse.Namespace, policy: Any, env: Any, seed: int = 0) -> Any:
+    if not getattr(a, "latency_mode", None):
+        return policy
+    from groot_eval.latency import with_latency
+
+    wrapped = with_latency(policy, a.latency_mode, getattr(env, "dt", None), a.during_inference, seed)
+    print(f"Latency model: {wrapped.name}")
+    return wrapped
+
+
 def _write_trace(recorder: Any, a: argparse.Namespace) -> None:
     if recorder is not None and recorder.episodes:
         root = recorder.write(a.trace)
@@ -136,12 +146,44 @@ def cmd_gap(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(a: argparse.Namespace) -> int:
+    from groot_eval.replay import format_params, replay_markdown, replay_trace, system_id
+    from groot_eval.trace import TraceSet
+
+    ts = TraceSet.open(a.traces)
+    env = make_env(a.env, **_kv(a.env_arg))
+    base = _kv(a.param)
+    signals = a.signals.split(",") if a.signals else None
+    opts = {"reset_every": a.reset_every, "signals": signals, "episodes": a.episodes}
+    try:
+        if a.config:
+            fit = system_id(env, ts, SweepConfig.load(a.config), base, **opts)
+            baseline = fit["baseline"]
+        else:
+            fit, baseline = None, replay_trace(env, ts, base, label="baseline", **opts)
+    finally:
+        env.close()
+    out = Path(a.out)
+    payload: dict[str, Any] = {"trace": str(ts.root), "env": a.env, "baseline": baseline.to_dict()}
+    if fit:
+        payload.update(ranked=[r.to_dict() for r in fit["ranked"]], sensitivity=fit["sensitivity"], notes=fit["notes"])
+    _write(out / "replay.json", json.dumps(payload, indent=2, default=str))
+    _write(out / "replay.md", replay_markdown(ts, a.env, baseline, fit, top=a.top, reset_every=a.reset_every))
+    print(f"Baseline tracking error (mean nRMSE): {baseline.score:.3f}")
+    if fit and fit["ranked"]:
+        best = fit["ranked"][0]
+        print(f"Best of {len(fit['ranked'])} settings: {best.score:.3f}  ({format_params(best.params)})")
+        for note in fit["notes"]:
+            print(f"  - {note}")
+    return 0
+
+
 def cmd_sweep(a: argparse.Namespace) -> int:
     cfg = SweepConfig.load(a.config)
     if a.episodes:
         cfg.episodes = a.episodes
     env = make_env(a.env, **_kv(a.env_arg))
-    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env, cfg.seed)
     scenarios = list(cfg.scenarios())
     print(f"Evaluating {getattr(policy, 'name', a.policy)} on {a.env}: {len(scenarios)} episodes")
 
@@ -155,6 +197,12 @@ def cmd_sweep(a: argparse.Namespace) -> int:
     out = Path(a.out)
     s = _save_run(run, out, a.confidence)
     _write_trace(recorder, a)
+    if a.export_pairs:
+        from groot_eval.correlation import pairs_from_run, write_pairs
+
+        rows = pairs_from_run(run, a.pairs_policy)
+        write_pairs(rows, a.export_pairs)
+        print(f"  appended {len(rows)} sim rows to {a.export_pairs}")
     if a.export_suite:
         from groot_eval.regression import export_suite
 
@@ -187,7 +235,7 @@ def cmd_regress(a: argparse.Namespace) -> int:
     from groot_eval.regression import load_suite, run_suite
 
     env = make_env(a.env, **_kv(a.env_arg))
-    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env)
     recorder = _recorder(a, env, policy)
     result = run_suite(env, policy, load_suite(a.suite), recorder=recorder)
     env.close()
@@ -255,10 +303,25 @@ def cmd_correlate(a: argparse.Namespace) -> int:
     from groot_eval.correlation import correlate, load_pairs
 
     c = correlate(load_pairs(a.pairs), a.confidence)
+    for w in c["join"]["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
     text = report.correlation_report(c)
     if a.out:
         _write(Path(a.out), text)
     print(text)
+    return 0
+
+
+def cmd_pairs(a: argparse.Namespace) -> int:
+    from groot_eval.correlation import pairs_from_trace, write_pairs
+    from groot_eval.trace import TraceSet
+
+    rows = pairs_from_trace(TraceSet.open(a.trace), a.policy, a.domain)
+    if not rows:
+        print("no episodes with a success mark in this trace")
+        return 1
+    write_pairs(rows, a.out, append=not a.overwrite)
+    print(f"  wrote {len(rows)} {rows[0]['domain']} rows for {rows[0]['policy']} to {a.out}")
     return 0
 
 
@@ -280,6 +343,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--policy", required=True, help="pd | pd-avoid | pd-chunk | groot://host:port | module:Class")
         sp.add_argument("--policy-arg", action="append", metavar="K=V")
 
+    def latency_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--latency-mode", metavar="MODE",
+                        help="make the sim feel inference latency: measured | fixed:<ms> | normal:<mean>,<std> | trace:<dir>")
+        sp.add_argument("--during-inference", choices=["hold", "continue"], default="hold",
+                        help="while inference runs: hold the last command, or continue the current chunk")
+
     sp = sub.add_parser("sweep", help="closed-loop evaluation over a randomization sweep")
     common(sp)
     sp.add_argument("--config", required=True)
@@ -290,6 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--anchors", type=int, default=5)
     sp.add_argument("--min-success", type=float, help="exit 1 if the CI lower bound is below this")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2) for sim-to-real comparison")
+    latency_args(sp)
+    sp.add_argument("--export-pairs", metavar="CSV", help="append policy,scenario_id,domain=sim,success rows for `correlate`")
+    sp.add_argument("--pairs-policy", metavar="LABEL", help="checkpoint label for --export-pairs (match the real runs)")
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -304,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--suite", required=True)
     sp.add_argument("--out")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2)")
+    latency_args(sp)
     sp.set_defaults(func=cmd_regress)
 
     sp = sub.add_parser("import-real", help="convert a real-robot LeRobot recording into a trace and validate it")
@@ -337,6 +410,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label-b", default="real")
     sp.set_defaults(func=cmd_gap)
 
+    sp = sub.add_parser("replay", help="play recorded actions through the sim; with --config, rank sim parameters by fit")
+    sp.add_argument("traces", help="trace to reproduce (usually the real-robot one)")
+    sp.add_argument("--env", default="reach2d", help="reach2d | isaaclab:<Task> | module:Class")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--param", action="append", metavar="K=V", help="fixed sim parameter for every replay")
+    sp.add_argument("--config", help="sweep YAML of candidate parameters (grid mode recommended)")
+    sp.add_argument("--reset-every", type=int, help="re-sync the sim to the recording every N steps")
+    sp.add_argument("--signals", help="comma-separated state signals to score (default: all non-constant)")
+    sp.add_argument("--episodes", type=int, help="replay only the first N episodes")
+    sp.add_argument("--top", type=int, default=10, help="rows in the ranking table")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_replay)
+
     sp = sub.add_parser("open-loop", help="score action chunks against recorded demonstrations")
     common(sp, needs_env=False)
     sp.add_argument("--dataset", required=True, help="LeRobot v2 dataset root")
@@ -357,6 +443,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--confidence", type=float, default=0.95)
     sp.add_argument("--out")
     sp.set_defaults(func=cmd_correlate)
+
+    sp = sub.add_parser("pairs", help="append a trace's episode outcomes to a pairs CSV for `correlate`")
+    sp.add_argument("trace", help="trace (sim or real) with per-episode success marks")
+    sp.add_argument("--out", required=True, help="pairs CSV (appended to unless --overwrite)")
+    sp.add_argument("--policy", help="checkpoint label (default: the trace's policy)")
+    sp.add_argument("--domain", choices=["sim", "real"], help="override the trace's domain")
+    sp.add_argument("--overwrite", action="store_true")
+    sp.set_defaults(func=cmd_pairs)
 
     sp = sub.add_parser("plan", help="how many episodes for a given confidence interval width")
     sp.add_argument("--margin", type=float, default=0.05)

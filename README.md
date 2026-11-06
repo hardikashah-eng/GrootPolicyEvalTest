@@ -10,7 +10,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 * **Regression suites** save every failing scenario (exact seed and parameters) and replay them against the next checkpoint: what got fixed, what still fails, and which previously passing anchors broke.
 * **Open-loop evaluation** scores predicted action chunks against recorded demonstrations in **LeRobot v2 format** (the format GR00T fine-tuning uses), including how error grows along the action chunk.
 * **Sim-to-real correlation** checks whether simulation ranks checkpoints the same way the real robot does, and which scenarios disagree most.
-* **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, and ranks every signal by how far sim and real drift apart (see [below](#debugging-the-sim-to-real-gap)).
+* **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, ranks every signal by how far sim and real drift apart, and replays real actions in sim to find the physics parameters that reproduce the robot (see [below](#debugging-the-sim-to-real-gap)).
 * **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus a built-in CPU simulator so the whole workflow runs on a laptop.
 
 ## Quick start
@@ -18,7 +18,8 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 57 tests
+uv run python examples/run_sim2real_demo.py   # the sim-to-real loop against a synthetic robot, ~15 s
+uv run pytest                           # 83 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -60,11 +61,15 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval compare BASE CAND` | Two-proportion test between two sweeps; exit 1 on significant regression. |
 | `groot-eval regress --suite` | Replay a regression suite; exit 1 if an anchor broke. |
 | `groot-eval open-loop --dataset` | Score action chunks against a LeRobot v2 dataset. `--video` decodes camera streams listed in `modality.json`. |
-| `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`). |
+| `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`), plus a matching section that says which rows didn't join and why. |
+| `groot-eval sweep ... --export-pairs CSV` | Append the sweep's outcomes as `domain=sim` rows for `correlate`; `--pairs-policy` sets the checkpoint label to match the real runs. |
+| `groot-eval pairs TRACE --out CSV` | Append a trace's episode outcomes (sim or real) to a pairs CSV. |
 | `groot-eval sweep ... --trace DIR` | Also write every step (observations, actions, timing, chunk position) as a LeRobot v2 trace. Works on `regress` too. |
+| `groot-eval sweep ... --latency-mode MODE` | Make the sim feel inference latency the way a robot does: `measured`, `fixed:<ms>`, `normal:<mean>,<std>` or `trace:<dir>` (sample a real trace's latencies). `--during-inference hold\|continue` picks what runs while inference is in flight. Works on `regress` too. |
 | `groot-eval import-real DATASET --out DIR` | Convert a real-robot LeRobot recording into a trace and validate it (missing columns, NaNs, declared fps vs timestamps, jitter). `--video` adds image statistics. |
 | `groot-eval check --reference REAL` | Contract check of an env rollout (`--env`, `--policy`) or a trace (`--traces`) against a reference: keys, dimensions, degrees vs radians, scale and offset, gripper scaling, control rate, image range and resolution, GR00T action-key order. Exit 1 on errors. |
 | `groot-eval gap SIM REAL --out DIR` | Sim-to-real gap report: signals ranked by distance, timing and latency, action-chunk boundaries, outcomes. `--plots` adds histograms (needs matplotlib). |
+| `groot-eval replay TRACE --out DIR` | Put the sim in each recorded episode's first state, play the recorded actions open loop, and report per-signal tracking error. `--config` ranks every candidate parameter setting by fit (system identification); `--reset-every N` re-syncs every N steps. |
 | `groot-eval make-demo-data` | Record a small LeRobot-format dataset from the built-in simulator. |
 | `groot-eval plan --margin 0.05` | Episodes needed for a given confidence-interval width. |
 
@@ -131,7 +136,35 @@ Success rates say *that* sim and real differ. Finding *why* needs both sides rec
 
 In a CPU check, the sim had friction 0.4–0.8, and the stand-in "real" had friction 0.9–1.2, sensor noise and 2 steps of hidden actuation delay. Contract checks came out clean. The chunk-boundary jump ratio was 2.5 on "real" versus 1.3 in sim, which points at the missing delay, and actions were jerkier on "real".
 
-The comparison is between distributions, not matched trajectories. Some differences are behaviour rather than physics, so check observation rows before action rows. Replaying real actions in sim is the natural next step for telling the two apart.
+The comparison is between distributions, not matched trajectories. Some differences are behaviour rather than physics, so check observation rows before action rows; step 4 tells the two apart.
+
+**4. Replay real actions in sim, then fit the sim.** `groot-eval replay traces/real --env reach2d --out runs/replay` puts the sim in each real episode's first state, plays the recorded actions open loop and measures how far the simulated states drift (nRMSE per state signal, plus error growth by steps since sync). The policy is out of the loop, so a gap here is the sim's dynamics, not the policy reacting to them. Error that is already large after one step points at gain, mass, units or a missing delay; error that grows slowly points at friction or damping.
+
+Add `--config configs/reach2d_sysid.yaml` (a grid of candidate physics) and every setting is replayed and ranked ([synthetic sample](docs/sample-reports/replay_SYNTHETIC.md)). The report flags a best value at the edge of the searched range, parameters the data doesn't pin down (several settings within 5% of the best), and how much each parameter moves the score. On a stand-in "real" trace with friction 1.0, gain 0.9, 2 steps of delay and sensor noise, the fit picked exactly those values out of 144 settings and cut tracking error by 95%.
+
+Replay needs an optional `set_state(state, recent_actions)` on the env: Reach2D has one; Isaac Lab takes a task-specific `state_setter` (not run here, no GPU). Without it, replay starts from the seed's reset state. Fit noise parameters with `gap`, not replay: noise only adds open-loop error. Recorded actions are what the policy commanded; if the robot driver clips or filters them, record what was applied.
+
+**5. Give the sim the robot's latency.** The closed-loop runner waits for the policy, so in sim a command computed from the observation at tick *k* acts at tick *k*. On the robot it acts at tick *k* + ceil(latency / dt), and something has to run in between. `--latency-mode` on `sweep` and `regress` models that ([`latency.py`](src/groot_eval/latency.py)):
+* `--latency-mode trace:traces/real` samples the inference latencies the robot recorded; `fixed:120` or `normal:110,25` work without a recording, and `measured` uses the real call time (for a live GR00T server).
+* `--during-inference hold` keeps sending the last command while inference runs (a blocking deploy script). `continue` keeps executing the current chunk and starts the new one at the step that matches the time that passed (an asynchronous executor).
+* With zero latency it is exactly the plain policy. The modelled latency is what the trace records, so `gap` compares like with like.
+
+In a CPU check, the stand-in "real" ran `pd-chunk` with about 110 ms of inference latency (2–3 control steps) in `continue` mode. A plain sim sweep differed from it by up to 0.52 σ (velocity) with a chunk-boundary ratio of 1.0 vs 5.3. The same sweep with `--latency-mode trace:<real> --during-inference continue` was within 0.01 σ on every signal, ratio 5.3 vs 5.3. With `hold` instead, actions were 0.57 σ off, so the gap report also tells you which execution mode the robot really uses. This "real" is synthetic and was built with the same latency model, so it shows the mechanism, not that the model fits a particular robot.
+
+**6. Pair sim and real outcomes per scenario.** `correlate` joins on `scenario_id`, but a sweep's ids are hashes of seed and parameters while a robot test set has names like `pick_place_00`, so nothing used to match. Now:
+* A sweep config can list **named scenarios** that mirror the real test set (`scenarios: [{name: pick_place_00, seed: 0, params: {...}}, ...]`, with `repeats` runs each). The name doesn't change the scenario's id, so existing suites and results still load.
+* `sweep --export-pairs pairs.csv --pairs-policy ckpt_a` appends one `sim` row per episode, keyed by the scenario name.
+* Real runs: pass `scenario_name=` to `TraceRecorder.start_episode(...)`, then `groot-eval pairs traces/real --out pairs.csv --policy ckpt_a` appends the `real` rows.
+* `correlate` now reports how many policy/scenario pairs matched and what was left out, and warns when one side uses hash ids and the other uses names, or when no checkpoint label appears on both sides.
+
+**The whole loop on a CPU.** [`examples/run_sim2real_demo.py`](examples/run_sim2real_demo.py) runs steps 1–6 against a **synthetic** "robot": Reach2D with hidden friction 1.0, actuator gain 0.9 and 1 step of actuator delay, sensor noise, about 110 ms of inference latency executed asynchronously, and a logger that exports velocity ×57.3. Three checkpoints run on the "robot" (16 named scenarios) and in a naive sim. Results ([summary](docs/sample-reports/sim2real_demo_SYNTHETIC.md)):
+* `check` rejects the first export with a degrees-vs-radians error on velocity; after the fix it is clean.
+* `gap` on the naive sim: largest gap 0.93 σ, and the robot's 2–3 steps of inference latency are called out.
+* `replay` with the parameter grid recovers friction 1.0, gain 0.9 and delay 1 exactly, out of 144 settings. It finds the actuator delay, not the inference latency, because recorded actions already include the latency.
+* A calibrated sim (fitted physics plus `--latency-mode trace:` the robot's latencies) brings the largest gap down to 0.12 σ.
+* `correlate`: outcome agreement goes from 83% to 98% on 48 matched pairs, and checkpoint ranking agreement from 0.00 to 1.00. The naive sim says the obstacle-avoiding checkpoint never fails. On the "robot" it collides in half the scenarios because it steers on observations that are 2–3 steps old, and only the latency-aware sim reproduces that. The calibrated sim is somewhat pessimistic on the chunked checkpoint (88% vs 100%).
+
+A test runs the demo and fails if the fit stops recovering the hidden values. Everything on the "robot" side is simulated, so this shows the tools work together and find known causes, not that they will on a particular robot.
 
 ## Status and limits
 
@@ -155,6 +188,8 @@ src/groot_eval/
   trace.py           step-level traces for sim and real (one LeRobot v2 schema), real-recording import
   checks.py          contract checks: keys, units, ranges, rates, image range, action order
   gap.py             signal-by-signal sim-to-real gap report
+  replay.py          open-loop replay of recorded actions, system-identification ranking
+  latency.py         inference-latency model for sim rollouts (hold / continue during inference)
   report.py          Markdown reports
   envs/              Reach2D simulator, Isaac Lab adapter
   policies/          reference controllers, action chunking, GR00T server adapter

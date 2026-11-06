@@ -163,9 +163,15 @@ def chunking(ts: TraceSet) -> dict[str, Any] | None:
             continue
         a = np.stack(f["action"].to_numpy()).astype(float)
         d = np.linalg.norm(np.diff(a, axis=0), axis=1)
-        nxt = cs[1:]
-        jumps.append(d[nxt == 0])
-        inner.append(d[nxt > 0])
+        ci = f["chunk_index"].to_numpy(dtype=float) if "chunk_index" in f else np.full(len(cs), -1.0)
+        if np.any(ci >= 0):  # a new chunk index marks a boundary, even if it starts mid-chunk (stale steps skipped)
+            nxt, prev = ci[1:], ci[:-1]
+            jumps.append(d[(nxt >= 0) & (nxt != prev)])
+            inner.append(d[(nxt >= 0) & (nxt == prev)])
+        else:
+            nxt = cs[1:]
+            jumps.append(d[nxt == 0])
+            inner.append(d[nxt > 0])
     if not jumps:
         return None
     j, i = np.concatenate(jumps), np.concatenate(inner)
@@ -261,7 +267,8 @@ def _timing_notes(ta: dict[str, Any], tb: dict[str, Any], la: str, lb: str) -> l
     sb = tb.get("latency_p95_steps")
     if sb is not None and sb >= 0.5:
         notes.append(f"{lb} policy latency p95 is {sb:.2f} control steps. If {la} waits for the policy (the closed-loop runner does), "
-                     f"{la} never sees this delay: add about {math.ceil(sb)} step(s) of action delay in {la} to match.")
+                     f"{la} never sees this delay: add about {math.ceil(sb)} step(s) of action delay in {la}, or rerun it with "
+                     f"`--latency-mode trace:<{lb} trace>` to replay the recorded latencies.")
     la_ms, lb_ms = ta.get("latency_ms"), tb.get("latency_ms")
     if la_ms and lb_ms and lb_ms["p95"] > 2 * la_ms["p95"]:
         notes.append(f"Inference is slower in {lb} (p95 {lb_ms['p95']:.1f} ms vs {la_ms['p95']:.1f} ms): different hardware, network hop or batch settings.")

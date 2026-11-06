@@ -51,6 +51,7 @@ class IsaacLabEnv:
         param_setters: dict[str, ParamSetter] | None = None,
         obs_key: str = "policy",
         success_fn: Callable[[Any, dict[str, Any]], bool] | None = None,
+        state_setter: Callable[[Any, dict[str, Any], Any], Any] | None = None,
     ) -> None:
         self.app = _launch_app(headless)
         import gymnasium as gym
@@ -65,6 +66,7 @@ class IsaacLabEnv:
         self.obs_key = obs_key
         self.param_setters = param_setters or {}
         self.success_fn = success_fn
+        self.state_setter = state_setter
         cfg = _parse_env_cfg(task, num_envs=1)
         self.env = gym.make(task, cfg=cfg)
         self.t = 0
@@ -93,6 +95,16 @@ class IsaacLabEnv:
             if not success:
                 info["failure_reason"] = "timeout" if done_trunc else "terminated"
         return self._obs(obs, ""), float(reward[0]), done_term, done_trunc, info
+
+    def set_state(self, state: dict[str, Any], recent_actions: Any = None) -> dict[str, Any]:
+        """Write a recorded state into the sim via ``state_setter(unwrapped_env, state, recent_actions)``.
+
+        The setter is task-specific (joint positions, object poses, ...) and must
+        return the env's raw observation afterwards. Not run in this repo (no GPU).
+        """
+        if self.state_setter is None:
+            raise NotImplementedError("pass state_setter=... to IsaacLabEnv to replay from recorded states")
+        return self._obs(self.state_setter(self.env.unwrapped, state, recent_actions), "")
 
     @property
     def dt(self) -> float | None:

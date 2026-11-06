@@ -16,13 +16,25 @@ Example (YAML)::
       action_delay:  {choice: [0, 1, 2, 3]}
       obstacle:      {choice: [false, true], weights: [0.7, 0.3]}
       gravity:       {fixed: 9.81}
+
+To mirror a real test set, list named scenarios instead of sampling them; the
+names are what ``sweep --export-pairs`` writes, so they join with the robot's
+results in ``groot-eval correlate``::
+
+    task: "pick up the cup"
+    params:
+      friction: {fixed: 0.8}       # fixed params apply to every named scenario
+    repeats: 3                     # seeds seed, seed+1, seed+2 for each
+    scenarios:
+      - {name: pick_place_00, seed: 0, params: {mass: 0.4}}
+      - {name: pick_place_01, seed: 1}
 """
 
 from __future__ import annotations
 
 import itertools
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -107,19 +119,33 @@ class SweepConfig:
     task: str = ""
     mode: str = "random"  # random | grid
     grid_points: int = 3
-    repeats: int = 1  # grid mode: seeds per grid cell
+    repeats: int = 1  # grid mode: seeds per grid cell; named scenarios: runs per scenario
+    named: list[Scenario] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SweepConfig":
         params = [parse_param(k, v) for k, v in (data.get("params") or {}).items()]
+        task = str(data.get("task", ""))
+        named = []
+        fixed = {p.name: p.sample(np.random.default_rng(0)) for p in params if p.kind == "fixed"}
+        for i, entry in enumerate(data.get("scenarios") or []):
+            if not isinstance(entry, dict) or not entry.get("name"):
+                raise ValueError(f"scenarios[{i}] needs a name")
+            named.append(Scenario(seed=int(entry.get("seed", i)), params={**fixed, **(entry.get("params") or {})},
+                                  task=str(entry.get("task", task)), name=str(entry["name"])))
+        if len({s.name for s in named}) != len(named):
+            raise ValueError("scenario names must be unique")
+        if named and any(p.kind != "fixed" for p in params):
+            raise ValueError("with named scenarios, params may only be fixed (put varying values in each scenario)")
         return cls(
             params=params,
             episodes=int(data.get("episodes", 100)),
             seed=int(data.get("seed", 0)),
-            task=str(data.get("task", "")),
+            task=task,
             mode=str(data.get("mode", "random")),
             grid_points=int(data.get("grid_points", 3)),
             repeats=int(data.get("repeats", 1)),
+            named=named,
         )
 
     @classmethod
@@ -128,6 +154,11 @@ class SweepConfig:
             return cls.from_dict(yaml.safe_load(fh) or {})
 
     def scenarios(self) -> Iterator[Scenario]:
+        if self.named:
+            for s in self.named:
+                for r in range(self.repeats):
+                    yield Scenario(seed=s.seed + r, params=dict(s.params), task=s.task, name=s.name)
+            return
         rng = np.random.default_rng(self.seed)
         if self.mode == "grid":
             axes = [p.grid(self.grid_points) for p in self.params]

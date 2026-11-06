@@ -125,6 +125,15 @@ def correlation_report(c: dict[str, Any]) -> str:
         sim, real = p["sim"], p["real"]
         lines.append(f"| {p['policy']} | {_pct(sim['rate'])} [{_pct(sim['ci_low'])}–{_pct(sim['ci_high'])}] n={sim['trials']} | "
                      f"{_pct(real['rate'])} [{_pct(real['ci_low'])}–{_pct(real['ci_high'])}] n={real['trials']} | {_pct(p.get('gap'))} |")
+    j = c.get("join")
+    if j:
+        lines += ["", "## Matching", "",
+                  f"{j['matched']} policy/scenario pairs matched ({j['sim_keys']} in sim, {j['real_keys']} in real)."]
+        lines += [f"* **Warning:** {w}" for w in j["warnings"]]
+        for key, label in (("only_sim", "Only in sim"), ("only_real", "Only in real"),
+                           ("policies_only_sim", "Policies only in sim"), ("policies_only_real", "Policies only in real")):
+            if j[key]:
+                lines.append(f"* {label}: " + ", ".join(f"`{x}`" for x in j[key][:10]) + (" ..." if len(j[key]) > 10 else ""))
     lines += ["", "## Scenarios where sim and real disagree most", "",
               "Candidates for better assets, physics tuning, or domain randomization.", "",
               "| Scenario | Mean abs disagreement |", "|---|---|",

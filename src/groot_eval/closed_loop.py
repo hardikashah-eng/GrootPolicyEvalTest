@@ -42,6 +42,9 @@ def _run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRe
         except Exception as exc:  # a crashing policy is a failed episode, not a crashed sweep
             return EpisodeResult(scenario, False, steps, total, f"policy_error: {type(exc).__name__}: {exc}", latencies)
         latencies.append((time.perf_counter() - t0) * 1000)
+        modelled = getattr(policy, "last_latency_ms", None)  # RealTimePolicy reports the latency it simulated
+        if modelled is not None:
+            latencies[-1] = float(modelled)
         if not np.all(np.isfinite(np.asarray(action, dtype=float))):
             return EpisodeResult(scenario, False, steps, total, "non_finite_action", latencies)
         seen = obs

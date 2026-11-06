@@ -101,6 +101,22 @@ class Reach2DEnv:
     def close(self) -> None:
         pass
 
+    def set_state(self, state: Obs, recent_actions: np.ndarray | None = None) -> Obs:
+        """Teleport the point mass to a recorded state (call after ``reset``)."""
+        if "state.position" in state:
+            self.pos = np.asarray(state["state.position"], dtype=float).reshape(2).copy()
+        if "state.velocity" in state:
+            self.vel = np.asarray(state["state.velocity"], dtype=float).reshape(2).copy()
+        if "state.target" in state:
+            self.target = np.asarray(state["state.target"], dtype=float).reshape(2).copy()
+        if "state.obstacle" in state and self.p["obstacle"]:
+            self.obstacle_centre = np.asarray(state["state.obstacle"], dtype=float).reshape(-1)[:2].copy()
+        n = int(self.p["action_delay"])
+        past = [] if recent_actions is None else [np.clip(a, -1.0, 1.0) for a in np.asarray(recent_actions, dtype=float).reshape(-1, 2)]
+        history = [np.zeros(2)] * n + past
+        self._queue = deque(history[len(history) - n:]) if n else deque()
+        return self._obs()
+
     # -- helpers ----------------------------------------------------------
     def _obs(self) -> Obs:
         noise = float(self.p["sensor_noise"])
