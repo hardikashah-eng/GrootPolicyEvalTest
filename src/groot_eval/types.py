@@ -10,23 +10,34 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Scenario:
-    """One reproducible episode setup: a seed plus the randomized parameters."""
+    """One reproducible episode setup: a seed plus the randomized parameters.
+
+    ``name`` is an optional human label (``pick_place_00``) shared with the real
+    test set. It is not part of ``scenario_id``, so naming a scenario does not
+    change its id; ``pair_id`` is what sim/real pairing joins on.
+    """
 
     seed: int
     params: dict[str, Any] = field(default_factory=dict)
     task: str = ""
+    name: str = ""
 
     @property
     def scenario_id(self) -> str:
         blob = json.dumps({"seed": self.seed, "params": self.params, "task": self.task}, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
+    @property
+    def pair_id(self) -> str:
+        return self.name or self.scenario_id
+
     def to_dict(self) -> dict[str, Any]:
         return {"scenario_id": self.scenario_id, **asdict(self)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Scenario":
-        return cls(seed=int(data["seed"]), params=dict(data.get("params", {})), task=data.get("task", ""))
+        return cls(seed=int(data["seed"]), params=dict(data.get("params", {})), task=data.get("task", ""),
+                   name=str(data.get("name") or ""))
 
 
 @dataclass

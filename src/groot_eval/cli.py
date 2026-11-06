@@ -197,6 +197,12 @@ def cmd_sweep(a: argparse.Namespace) -> int:
     out = Path(a.out)
     s = _save_run(run, out, a.confidence)
     _write_trace(recorder, a)
+    if a.export_pairs:
+        from groot_eval.correlation import pairs_from_run, write_pairs
+
+        rows = pairs_from_run(run, a.pairs_policy)
+        write_pairs(rows, a.export_pairs)
+        print(f"  appended {len(rows)} sim rows to {a.export_pairs}")
     if a.export_suite:
         from groot_eval.regression import export_suite
 
@@ -297,10 +303,25 @@ def cmd_correlate(a: argparse.Namespace) -> int:
     from groot_eval.correlation import correlate, load_pairs
 
     c = correlate(load_pairs(a.pairs), a.confidence)
+    for w in c["join"]["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
     text = report.correlation_report(c)
     if a.out:
         _write(Path(a.out), text)
     print(text)
+    return 0
+
+
+def cmd_pairs(a: argparse.Namespace) -> int:
+    from groot_eval.correlation import pairs_from_trace, write_pairs
+    from groot_eval.trace import TraceSet
+
+    rows = pairs_from_trace(TraceSet.open(a.trace), a.policy, a.domain)
+    if not rows:
+        print("no episodes with a success mark in this trace")
+        return 1
+    write_pairs(rows, a.out, append=not a.overwrite)
+    print(f"  wrote {len(rows)} {rows[0]['domain']} rows for {rows[0]['policy']} to {a.out}")
     return 0
 
 
@@ -339,6 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-success", type=float, help="exit 1 if the CI lower bound is below this")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2) for sim-to-real comparison")
     latency_args(sp)
+    sp.add_argument("--export-pairs", metavar="CSV", help="append policy,scenario_id,domain=sim,success rows for `correlate`")
+    sp.add_argument("--pairs-policy", metavar="LABEL", help="checkpoint label for --export-pairs (match the real runs)")
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -420,6 +443,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--confidence", type=float, default=0.95)
     sp.add_argument("--out")
     sp.set_defaults(func=cmd_correlate)
+
+    sp = sub.add_parser("pairs", help="append a trace's episode outcomes to a pairs CSV for `correlate`")
+    sp.add_argument("trace", help="trace (sim or real) with per-episode success marks")
+    sp.add_argument("--out", required=True, help="pairs CSV (appended to unless --overwrite)")
+    sp.add_argument("--policy", help="checkpoint label (default: the trace's policy)")
+    sp.add_argument("--domain", choices=["sim", "real"], help="override the trace's domain")
+    sp.add_argument("--overwrite", action="store_true")
+    sp.set_defaults(func=cmd_pairs)
 
     sp = sub.add_parser("plan", help="how many episodes for a given confidence interval width")
     sp.add_argument("--margin", type=float, default=0.05)

@@ -18,7 +18,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 73 tests
+uv run pytest                           # 82 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -60,7 +60,9 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval compare BASE CAND` | Two-proportion test between two sweeps; exit 1 on significant regression. |
 | `groot-eval regress --suite` | Replay a regression suite; exit 1 if an anchor broke. |
 | `groot-eval open-loop --dataset` | Score action chunks against a LeRobot v2 dataset. `--video` decodes camera streams listed in `modality.json`. |
-| `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`). |
+| `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`), plus a matching section that says which rows didn't join and why. |
+| `groot-eval sweep ... --export-pairs CSV` | Append the sweep's outcomes as `domain=sim` rows for `correlate`; `--pairs-policy` sets the checkpoint label to match the real runs. |
+| `groot-eval pairs TRACE --out CSV` | Append a trace's episode outcomes (sim or real) to a pairs CSV. |
 | `groot-eval sweep ... --trace DIR` | Also write every step (observations, actions, timing, chunk position) as a LeRobot v2 trace. Works on `regress` too. |
 | `groot-eval sweep ... --latency-mode MODE` | Make the sim feel inference latency the way a robot does: `measured`, `fixed:<ms>`, `normal:<mean>,<std>` or `trace:<dir>` (sample a real trace's latencies). `--during-inference hold\|continue` picks what runs while inference is in flight. Works on `regress` too. |
 | `groot-eval import-real DATASET --out DIR` | Convert a real-robot LeRobot recording into a trace and validate it (missing columns, NaNs, declared fps vs timestamps, jitter). `--video` adds image statistics. |
@@ -147,6 +149,12 @@ Replay needs an optional `set_state(state, recent_actions)` on the env: Reach2D 
 * With zero latency it is exactly the plain policy. The modelled latency is what the trace records, so `gap` compares like with like.
 
 In a CPU check, the stand-in "real" ran `pd-chunk` with about 110 ms of inference latency (2–3 control steps) in `continue` mode. A plain sim sweep differed from it by up to 0.52 σ (velocity) with a chunk-boundary ratio of 1.0 vs 5.3. The same sweep with `--latency-mode trace:<real> --during-inference continue` was within 0.01 σ on every signal, ratio 5.3 vs 5.3. With `hold` instead, actions were 0.57 σ off, so the gap report also tells you which execution mode the robot really uses. This "real" is synthetic and was built with the same latency model, so it shows the mechanism, not that the model fits a particular robot.
+
+**6. Pair sim and real outcomes per scenario.** `correlate` joins on `scenario_id`, but a sweep's ids are hashes of seed and parameters while a robot test set has names like `pick_place_00`, so nothing used to match. Now:
+* A sweep config can list **named scenarios** that mirror the real test set (`scenarios: [{name: pick_place_00, seed: 0, params: {...}}, ...]`, with `repeats` runs each). The name doesn't change the scenario's id, so existing suites and results still load.
+* `sweep --export-pairs pairs.csv --pairs-policy ckpt_a` appends one `sim` row per episode, keyed by the scenario name.
+* Real runs: pass `scenario_name=` to `TraceRecorder.start_episode(...)`, then `groot-eval pairs traces/real --out pairs.csv --policy ckpt_a` appends the `real` rows.
+* `correlate` now reports how many policy/scenario pairs matched and what was left out, and warns when one side uses hash ids and the other uses names, or when no checkpoint label appears on both sides.
 
 ## Status and limits
 
