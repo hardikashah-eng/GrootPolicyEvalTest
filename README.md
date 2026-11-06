@@ -18,7 +18,8 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 82 tests
+uv run python examples/run_sim2real_demo.py   # the sim-to-real loop against a synthetic robot, ~15 s
+uv run pytest                           # 83 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -155,6 +156,15 @@ In a CPU check, the stand-in "real" ran `pd-chunk` with about 110 ms of inferenc
 * `sweep --export-pairs pairs.csv --pairs-policy ckpt_a` appends one `sim` row per episode, keyed by the scenario name.
 * Real runs: pass `scenario_name=` to `TraceRecorder.start_episode(...)`, then `groot-eval pairs traces/real --out pairs.csv --policy ckpt_a` appends the `real` rows.
 * `correlate` now reports how many policy/scenario pairs matched and what was left out, and warns when one side uses hash ids and the other uses names, or when no checkpoint label appears on both sides.
+
+**The whole loop on a CPU.** [`examples/run_sim2real_demo.py`](examples/run_sim2real_demo.py) runs steps 1–6 against a **synthetic** "robot": Reach2D with hidden friction 1.0, actuator gain 0.9 and 1 step of actuator delay, sensor noise, about 110 ms of inference latency executed asynchronously, and a logger that exports velocity ×57.3. Three checkpoints run on the "robot" (16 named scenarios) and in a naive sim. Results ([summary](docs/sample-reports/sim2real_demo_SYNTHETIC.md)):
+* `check` rejects the first export with a degrees-vs-radians error on velocity; after the fix it is clean.
+* `gap` on the naive sim: largest gap 0.93 σ, and the robot's 2–3 steps of inference latency are called out.
+* `replay` with the parameter grid recovers friction 1.0, gain 0.9 and delay 1 exactly, out of 144 settings. It finds the actuator delay, not the inference latency, because recorded actions already include the latency.
+* A calibrated sim (fitted physics plus `--latency-mode trace:` the robot's latencies) brings the largest gap down to 0.12 σ.
+* `correlate`: outcome agreement goes from 83% to 98% on 48 matched pairs, and checkpoint ranking agreement from 0.00 to 1.00. The naive sim says the obstacle-avoiding checkpoint never fails. On the "robot" it collides in half the scenarios because it steers on observations that are 2–3 steps old, and only the latency-aware sim reproduces that. The calibrated sim is somewhat pessimistic on the chunked checkpoint (88% vs 100%).
+
+A test runs the demo and fails if the fit stops recovering the hidden values. Everything on the "robot" side is simulated, so this shows the tools work together and find known causes, not that they will on a particular robot.
 
 ## Status and limits
 

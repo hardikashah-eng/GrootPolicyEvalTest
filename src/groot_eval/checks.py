@@ -201,9 +201,12 @@ def _compare_dims(kind: str, names: list[str], A: np.ndarray, B: np.ndarray, a_n
             continue
         r = sa / sb
         extra = " (gripper scaling: 0-1 vs 0-100 or 0-255?)" if hint == "gripper" else ""
-        if 45 <= r <= 70 or 45 <= 1 / r <= 70:
-            out.append(Finding("error", f"{kind}.units", f"{label}: spread is {r:.1f}x larger in {a_name} than in {b_name}; "
-                                                        f"looks like degrees vs radians (x{DEG_PER_RAD:.1f}){extra}"))
+        # Near 57.3 (half to ~1.6x of it): dynamics move the spread too, but rarely 30x. 100x is left to the
+        # scale check below: that is percent or 0-100 gripper scaling more often than degrees.
+        if hint != "gripper" and DEG_PER_RAD / 2 <= max(r, 1 / r) <= 90:
+            out.append(Finding("error", f"{kind}.units", f"{label}: spread is {r:.3g}x that of {b_name}; "
+                                                        f"looks like degrees vs radians (x{DEG_PER_RAD:.1f}, "
+                                                        f"any remainder is likely dynamics){extra}"))
             continue
         if r > 10 or r < 0.1:
             out.append(Finding("warn", f"{kind}.scale", f"{label}: spread is {r:.2g}x that of {b_name}: units, normalization "
