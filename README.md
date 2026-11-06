@@ -10,7 +10,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 * **Regression suites** save every failing scenario (exact seed and parameters) and replay them against the next checkpoint: what got fixed, what still fails, and which previously passing anchors broke.
 * **Open-loop evaluation** scores predicted action chunks against recorded demonstrations in **LeRobot v2 format** (the format GR00T fine-tuning uses), including how error grows along the action chunk.
 * **Sim-to-real correlation** checks whether simulation ranks checkpoints the same way the real robot does, and which scenarios disagree most.
-* **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, and ranks every signal by how far sim and real drift apart (see [below](#debugging-the-sim-to-real-gap)).
+* **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, ranks every signal by how far sim and real drift apart, and replays real actions in sim to find the physics parameters that reproduce the robot (see [below](#debugging-the-sim-to-real-gap)).
 * **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus a built-in CPU simulator so the whole workflow runs on a laptop.
 
 ## Quick start
@@ -18,7 +18,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 57 tests
+uv run pytest                           # 65 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -65,6 +65,7 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval import-real DATASET --out DIR` | Convert a real-robot LeRobot recording into a trace and validate it (missing columns, NaNs, declared fps vs timestamps, jitter). `--video` adds image statistics. |
 | `groot-eval check --reference REAL` | Contract check of an env rollout (`--env`, `--policy`) or a trace (`--traces`) against a reference: keys, dimensions, degrees vs radians, scale and offset, gripper scaling, control rate, image range and resolution, GR00T action-key order. Exit 1 on errors. |
 | `groot-eval gap SIM REAL --out DIR` | Sim-to-real gap report: signals ranked by distance, timing and latency, action-chunk boundaries, outcomes. `--plots` adds histograms (needs matplotlib). |
+| `groot-eval replay TRACE --out DIR` | Put the sim in each recorded episode's first state, play the recorded actions open loop, and report per-signal tracking error. `--config` ranks every candidate parameter setting by fit (system identification); `--reset-every N` re-syncs every N steps. |
 | `groot-eval make-demo-data` | Record a small LeRobot-format dataset from the built-in simulator. |
 | `groot-eval plan --margin 0.05` | Episodes needed for a given confidence-interval width. |
 
@@ -131,7 +132,13 @@ Success rates say *that* sim and real differ. Finding *why* needs both sides rec
 
 In a CPU check, the sim had friction 0.4–0.8, and the stand-in "real" had friction 0.9–1.2, sensor noise and 2 steps of hidden actuation delay. Contract checks came out clean. The chunk-boundary jump ratio was 2.5 on "real" versus 1.3 in sim, which points at the missing delay, and actions were jerkier on "real".
 
-The comparison is between distributions, not matched trajectories. Some differences are behaviour rather than physics, so check observation rows before action rows. Replaying real actions in sim is the natural next step for telling the two apart.
+The comparison is between distributions, not matched trajectories. Some differences are behaviour rather than physics, so check observation rows before action rows; step 4 tells the two apart.
+
+**4. Replay real actions in sim, then fit the sim.** `groot-eval replay traces/real --env reach2d --out runs/replay` puts the sim in each real episode's first state, plays the recorded actions open loop and measures how far the simulated states drift (nRMSE per state signal, plus error growth by steps since sync). The policy is out of the loop, so a gap here is the sim's dynamics, not the policy reacting to them. Error that is already large after one step points at gain, mass, units or a missing delay; error that grows slowly points at friction or damping.
+
+Add `--config configs/reach2d_sysid.yaml` (a grid of candidate physics) and every setting is replayed and ranked ([synthetic sample](docs/sample-reports/replay_SYNTHETIC.md)). The report flags a best value at the edge of the searched range, parameters the data doesn't pin down (several settings within 5% of the best), and how much each parameter moves the score. On a stand-in "real" trace with friction 1.0, gain 0.9, 2 steps of delay and sensor noise, the fit picked exactly those values out of 144 settings and cut tracking error by 95%.
+
+Replay needs an optional `set_state(state, recent_actions)` on the env: Reach2D has one; Isaac Lab takes a task-specific `state_setter` (not run here, no GPU). Without it, replay starts from the seed's reset state. Fit noise parameters with `gap`, not replay: noise only adds open-loop error. Recorded actions are what the policy commanded; if the robot driver clips or filters them, record what was applied.
 
 ## Status and limits
 
@@ -155,6 +162,7 @@ src/groot_eval/
   trace.py           step-level traces for sim and real (one LeRobot v2 schema), real-recording import
   checks.py          contract checks: keys, units, ranges, rates, image range, action order
   gap.py             signal-by-signal sim-to-real gap report
+  replay.py          open-loop replay of recorded actions, system-identification ranking
   report.py          Markdown reports
   envs/              Reach2D simulator, Isaac Lab adapter
   policies/          reference controllers, action chunking, GR00T server adapter

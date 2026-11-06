@@ -33,3 +33,20 @@ class Env(Protocol):
         """
 
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class StatefulEnv(Env, Protocol):
+    """An env that can be put into a recorded state (needed by ``groot-eval replay``).
+
+    ``set_state`` is optional: envs without it can still be replayed, but the
+    replay then starts from whatever ``reset`` produces for the recorded seed.
+    """
+
+    def set_state(self, state: Obs, recent_actions: np.ndarray | None = None) -> Obs:
+        """Move the current episode to ``state`` (``state.*`` keys) and return the new obs.
+
+        ``recent_actions`` (oldest first) are the commands sent just before this
+        state, so an env with actuation delay can refill its in-flight queue.
+        Raise ``NotImplementedError`` if the env cannot do this.
+        """

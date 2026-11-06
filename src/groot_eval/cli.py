@@ -136,6 +136,38 @@ def cmd_gap(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(a: argparse.Namespace) -> int:
+    from groot_eval.replay import format_params, replay_markdown, replay_trace, system_id
+    from groot_eval.trace import TraceSet
+
+    ts = TraceSet.open(a.traces)
+    env = make_env(a.env, **_kv(a.env_arg))
+    base = _kv(a.param)
+    signals = a.signals.split(",") if a.signals else None
+    opts = {"reset_every": a.reset_every, "signals": signals, "episodes": a.episodes}
+    try:
+        if a.config:
+            fit = system_id(env, ts, SweepConfig.load(a.config), base, **opts)
+            baseline = fit["baseline"]
+        else:
+            fit, baseline = None, replay_trace(env, ts, base, label="baseline", **opts)
+    finally:
+        env.close()
+    out = Path(a.out)
+    payload: dict[str, Any] = {"trace": str(ts.root), "env": a.env, "baseline": baseline.to_dict()}
+    if fit:
+        payload.update(ranked=[r.to_dict() for r in fit["ranked"]], sensitivity=fit["sensitivity"], notes=fit["notes"])
+    _write(out / "replay.json", json.dumps(payload, indent=2, default=str))
+    _write(out / "replay.md", replay_markdown(ts, a.env, baseline, fit, top=a.top, reset_every=a.reset_every))
+    print(f"Baseline tracking error (mean nRMSE): {baseline.score:.3f}")
+    if fit and fit["ranked"]:
+        best = fit["ranked"][0]
+        print(f"Best of {len(fit['ranked'])} settings: {best.score:.3f}  ({format_params(best.params)})")
+        for note in fit["notes"]:
+            print(f"  - {note}")
+    return 0
+
+
 def cmd_sweep(a: argparse.Namespace) -> int:
     cfg = SweepConfig.load(a.config)
     if a.episodes:
@@ -336,6 +368,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label-a", default="sim")
     sp.add_argument("--label-b", default="real")
     sp.set_defaults(func=cmd_gap)
+
+    sp = sub.add_parser("replay", help="play recorded actions through the sim; with --config, rank sim parameters by fit")
+    sp.add_argument("traces", help="trace to reproduce (usually the real-robot one)")
+    sp.add_argument("--env", default="reach2d", help="reach2d | isaaclab:<Task> | module:Class")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--param", action="append", metavar="K=V", help="fixed sim parameter for every replay")
+    sp.add_argument("--config", help="sweep YAML of candidate parameters (grid mode recommended)")
+    sp.add_argument("--reset-every", type=int, help="re-sync the sim to the recording every N steps")
+    sp.add_argument("--signals", help="comma-separated state signals to score (default: all non-constant)")
+    sp.add_argument("--episodes", type=int, help="replay only the first N episodes")
+    sp.add_argument("--top", type=int, default=10, help="rows in the ranking table")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_replay)
 
     sp = sub.add_parser("open-loop", help="score action chunks against recorded demonstrations")
     common(sp, needs_env=False)
