@@ -65,6 +65,16 @@ def _recorder(a: argparse.Namespace, env: Any, policy: Any):
     return TraceRecorder(domain="sim", env=a.env, policy=getattr(policy, "name", a.policy), control_dt=getattr(env, "dt", None))
 
 
+def _latency(a: argparse.Namespace, policy: Any, env: Any, seed: int = 0) -> Any:
+    if not getattr(a, "latency_mode", None):
+        return policy
+    from groot_eval.latency import with_latency
+
+    wrapped = with_latency(policy, a.latency_mode, getattr(env, "dt", None), a.during_inference, seed)
+    print(f"Latency model: {wrapped.name}")
+    return wrapped
+
+
 def _write_trace(recorder: Any, a: argparse.Namespace) -> None:
     if recorder is not None and recorder.episodes:
         root = recorder.write(a.trace)
@@ -173,7 +183,7 @@ def cmd_sweep(a: argparse.Namespace) -> int:
     if a.episodes:
         cfg.episodes = a.episodes
     env = make_env(a.env, **_kv(a.env_arg))
-    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env, cfg.seed)
     scenarios = list(cfg.scenarios())
     print(f"Evaluating {getattr(policy, 'name', a.policy)} on {a.env}: {len(scenarios)} episodes")
 
@@ -219,7 +229,7 @@ def cmd_regress(a: argparse.Namespace) -> int:
     from groot_eval.regression import load_suite, run_suite
 
     env = make_env(a.env, **_kv(a.env_arg))
-    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env)
     recorder = _recorder(a, env, policy)
     result = run_suite(env, policy, load_suite(a.suite), recorder=recorder)
     env.close()
@@ -312,6 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--policy", required=True, help="pd | pd-avoid | pd-chunk | groot://host:port | module:Class")
         sp.add_argument("--policy-arg", action="append", metavar="K=V")
 
+    def latency_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--latency-mode", metavar="MODE",
+                        help="make the sim feel inference latency: measured | fixed:<ms> | normal:<mean>,<std> | trace:<dir>")
+        sp.add_argument("--during-inference", choices=["hold", "continue"], default="hold",
+                        help="while inference runs: hold the last command, or continue the current chunk")
+
     sp = sub.add_parser("sweep", help="closed-loop evaluation over a randomization sweep")
     common(sp)
     sp.add_argument("--config", required=True)
@@ -322,6 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--anchors", type=int, default=5)
     sp.add_argument("--min-success", type=float, help="exit 1 if the CI lower bound is below this")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2) for sim-to-real comparison")
+    latency_args(sp)
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -336,6 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--suite", required=True)
     sp.add_argument("--out")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2)")
+    latency_args(sp)
     sp.set_defaults(func=cmd_regress)
 
     sp = sub.add_parser("import-real", help="convert a real-robot LeRobot recording into a trace and validate it")

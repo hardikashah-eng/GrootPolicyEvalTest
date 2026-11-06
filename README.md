@@ -18,7 +18,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 65 tests
+uv run pytest                           # 73 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -62,6 +62,7 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval open-loop --dataset` | Score action chunks against a LeRobot v2 dataset. `--video` decodes camera streams listed in `modality.json`. |
 | `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`). |
 | `groot-eval sweep ... --trace DIR` | Also write every step (observations, actions, timing, chunk position) as a LeRobot v2 trace. Works on `regress` too. |
+| `groot-eval sweep ... --latency-mode MODE` | Make the sim feel inference latency the way a robot does: `measured`, `fixed:<ms>`, `normal:<mean>,<std>` or `trace:<dir>` (sample a real trace's latencies). `--during-inference hold\|continue` picks what runs while inference is in flight. Works on `regress` too. |
 | `groot-eval import-real DATASET --out DIR` | Convert a real-robot LeRobot recording into a trace and validate it (missing columns, NaNs, declared fps vs timestamps, jitter). `--video` adds image statistics. |
 | `groot-eval check --reference REAL` | Contract check of an env rollout (`--env`, `--policy`) or a trace (`--traces`) against a reference: keys, dimensions, degrees vs radians, scale and offset, gripper scaling, control rate, image range and resolution, GR00T action-key order. Exit 1 on errors. |
 | `groot-eval gap SIM REAL --out DIR` | Sim-to-real gap report: signals ranked by distance, timing and latency, action-chunk boundaries, outcomes. `--plots` adds histograms (needs matplotlib). |
@@ -140,6 +141,13 @@ Add `--config configs/reach2d_sysid.yaml` (a grid of candidate physics) and ever
 
 Replay needs an optional `set_state(state, recent_actions)` on the env: Reach2D has one; Isaac Lab takes a task-specific `state_setter` (not run here, no GPU). Without it, replay starts from the seed's reset state. Fit noise parameters with `gap`, not replay: noise only adds open-loop error. Recorded actions are what the policy commanded; if the robot driver clips or filters them, record what was applied.
 
+**5. Give the sim the robot's latency.** The closed-loop runner waits for the policy, so in sim a command computed from the observation at tick *k* acts at tick *k*. On the robot it acts at tick *k* + ceil(latency / dt), and something has to run in between. `--latency-mode` on `sweep` and `regress` models that ([`latency.py`](src/groot_eval/latency.py)):
+* `--latency-mode trace:traces/real` samples the inference latencies the robot recorded; `fixed:120` or `normal:110,25` work without a recording, and `measured` uses the real call time (for a live GR00T server).
+* `--during-inference hold` keeps sending the last command while inference runs (a blocking deploy script). `continue` keeps executing the current chunk and starts the new one at the step that matches the time that passed (an asynchronous executor).
+* With zero latency it is exactly the plain policy. The modelled latency is what the trace records, so `gap` compares like with like.
+
+In a CPU check, the stand-in "real" ran `pd-chunk` with about 110 ms of inference latency (2–3 control steps) in `continue` mode. A plain sim sweep differed from it by up to 0.52 σ (velocity) with a chunk-boundary ratio of 1.0 vs 5.3. The same sweep with `--latency-mode trace:<real> --during-inference continue` was within 0.01 σ on every signal, ratio 5.3 vs 5.3. With `hold` instead, actions were 0.57 σ off, so the gap report also tells you which execution mode the robot really uses. This "real" is synthetic and was built with the same latency model, so it shows the mechanism, not that the model fits a particular robot.
+
 ## Status and limits
 
 * **Tested here:** everything that runs on a CPU, including statistics, sweeps, attribution, comparison, regression suites, the LeRobot reader and writer, open-loop scoring, correlation, the CLI, and the GR00T adapter against a fake client.
@@ -163,6 +171,7 @@ src/groot_eval/
   checks.py          contract checks: keys, units, ranges, rates, image range, action order
   gap.py             signal-by-signal sim-to-real gap report
   replay.py          open-loop replay of recorded actions, system-identification ranking
+  latency.py         inference-latency model for sim rollouts (hold / continue during inference)
   report.py          Markdown reports
   envs/              Reach2D simulator, Isaac Lab adapter
   policies/          reference controllers, action chunking, GR00T server adapter
