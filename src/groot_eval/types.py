@@ -54,6 +54,18 @@ class EpisodeResult:
         }
 
 
+@dataclass
+class Finding:
+    """One result of a data or contract check: ``level`` is ``error``, ``warn`` or ``ok``."""
+
+    level: str
+    check: str
+    detail: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
 def _pct(values: list[float], q: float) -> float | None:
     if not values:
         return None

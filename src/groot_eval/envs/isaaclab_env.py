@@ -94,6 +94,11 @@ class IsaacLabEnv:
                 info["failure_reason"] = "timeout" if done_trunc else "terminated"
         return self._obs(obs, ""), float(reward[0]), done_term, done_trunc, info
 
+    @property
+    def dt(self) -> float | None:
+        """Control period in seconds (Isaac Lab's ``step_dt`` = sim dt x decimation)."""
+        return getattr(self.env.unwrapped, "step_dt", None)
+
     def close(self) -> None:
         self.env.close()
         self.app.close()

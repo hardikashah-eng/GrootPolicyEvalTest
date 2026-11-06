@@ -48,11 +48,11 @@ def load_suite(path: str | Path) -> dict[str, Any]:
     return suite
 
 
-def run_suite(env: Env, policy: Policy, suite: dict[str, Any]) -> dict[str, Any]:
+def run_suite(env: Env, policy: Policy, suite: dict[str, Any], recorder: Any = None) -> dict[str, Any]:
     fixed, still_failing, broken_anchors, anchors_ok = [], [], [], []
     for case in suite["cases"]:
         scenario = Scenario.from_dict(case["scenario"])
-        result = run_episode(env, policy, scenario)
+        result = run_episode(env, policy, scenario, recorder)
         entry = {"scenario_id": scenario.scenario_id, "params": scenario.params, "seed": scenario.seed,
                  "was": case.get("failure_reason"), "now": None if result.success else result.failure_reason}
         if case["origin"] == "failure":

@@ -64,3 +64,12 @@ class ChunkedPolicy:
         action = self._chunk[self._i]
         self._i += 1
         return action
+
+    # Where the last returned action came from; trace recording reads these.
+    @property
+    def last_chunk_index(self) -> int:
+        return self.inference_calls - 1
+
+    @property
+    def last_chunk_step(self) -> int:
+        return self._i - 1
