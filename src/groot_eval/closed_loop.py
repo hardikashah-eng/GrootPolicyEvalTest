@@ -31,6 +31,9 @@ def run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRec
 def _run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRecorder | None) -> EpisodeResult:
     obs = env.reset(scenario)
     policy.reset(scenario.task)
+    seed_episode = getattr(policy, "set_episode_seed", None)
+    if seed_episode is not None:  # randomness inside the policy follows the scenario, not the run order
+        seed_episode(scenario.seed)
     total = 0.0
     latencies: list[float] = []
     info: dict[str, Any] = {}

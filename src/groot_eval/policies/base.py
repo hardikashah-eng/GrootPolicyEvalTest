@@ -54,6 +54,11 @@ class ChunkedPolicy:
         self._chunk, self._i = None, 0
         self.inference_calls = 0
 
+    def set_episode_seed(self, seed: int) -> None:
+        inner = getattr(self.predictor, "set_episode_seed", None)
+        if inner is not None:
+            inner(seed)
+
     def act(self, obs: Obs) -> np.ndarray:
         if self._chunk is None or self._i >= min(self.execute_steps, len(self._chunk)):
             chunk = np.asarray(self.predictor.predict_chunk(obs), dtype=float)

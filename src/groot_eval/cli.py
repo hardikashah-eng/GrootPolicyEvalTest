@@ -65,6 +65,18 @@ def _recorder(a: argparse.Namespace, env: Any, policy: Any):
     return TraceRecorder(domain="sim", env=a.env, policy=getattr(policy, "name", a.policy), control_dt=getattr(env, "dt", None))
 
 
+def _manifest(a: argparse.Namespace, policy: Any, config: str | None) -> dict[str, Any]:
+    from groot_eval.manifest import build_manifest, unpinned
+
+    m = build_manifest(policy=getattr(policy, "name", a.policy), policy_args=_kv(a.policy_arg), env=a.env,
+                       env_args=_kv(a.env_arg), config=config, checkpoint=getattr(a, "checkpoint", None),
+                       latency=getattr(a, "latency_mode", None) and f"{a.latency_mode} ({a.during_inference})",
+                       extra={"policy_spec": a.policy})
+    for reason in unpinned(m):
+        print(f"warning: not reproducible: {reason}", file=sys.stderr)
+    return m
+
+
 def _latency(a: argparse.Namespace, policy: Any, env: Any, seed: int = 0) -> Any:
     if not getattr(a, "latency_mode", None):
         return policy
@@ -192,10 +204,14 @@ def cmd_sweep(a: argparse.Namespace) -> int:
             print(f"  {i + 1}/{len(scenarios)}")
 
     recorder = _recorder(a, env, policy)
+    manifest = _manifest(a, policy, a.config)
     run = evaluate(env, policy, scenarios, env_name=a.env, progress=progress, recorder=recorder)
     env.close()
     out = Path(a.out)
     s = _save_run(run, out, a.confidence)
+    from groot_eval.manifest import write_manifest
+
+    write_manifest(manifest, out)
     _write_trace(recorder, a)
     if a.export_pairs:
         from groot_eval.correlation import pairs_from_run, write_pairs
@@ -206,7 +222,7 @@ def cmd_sweep(a: argparse.Namespace) -> int:
     if a.export_suite:
         from groot_eval.regression import export_suite
 
-        suite = export_suite(run, out / "suite.json", anchors=a.anchors)
+        suite = export_suite(run, out / "suite.json", anchors=a.anchors, manifest=manifest)
         print(f"  wrote {out / 'suite.json'} ({len(suite['cases'])} cases)")
     print(f"Success {100 * s['success_rate']:.1f}% [{100 * s['ci_low']:.1f}, {100 * s['ci_high']:.1f}] "
           f"({s['successes']}/{s['episodes']}); failures: {s['failure_reasons'] or 'none'}")
@@ -217,8 +233,16 @@ def cmd_sweep(a: argparse.Namespace) -> int:
 
 
 def cmd_compare(a: argparse.Namespace) -> int:
+    from groot_eval.manifest import diff_manifests, load_manifest
+
     base, cand = _load_run(Path(a.baseline)), _load_run(Path(a.candidate))
     bs, cs = base.summary(a.confidence), cand.summary(a.confidence)
+    diffs = diff_manifests(load_manifest(a.baseline), load_manifest(a.candidate), ignore=_CHECKPOINT_FIELDS)
+    for d in diffs:
+        print(f"warning: runs differ beyond the checkpoint: {d}", file=sys.stderr)
+    if diffs and a.strict:
+        print("STRICT: baseline and candidate were not produced under the same conditions")
+        return 2
     common = {r.scenario.scenario_id for r in base.results} & {r.scenario.scenario_id for r in cand.results}
     if len(common) < min(base.trials, cand.trials):
         print(f"warning: runs share only {len(common)} scenarios; compare sweeps generated from the same config and seed")
@@ -231,20 +255,72 @@ def cmd_compare(a: argparse.Namespace) -> int:
     return 1 if regressed else 0
 
 
-def cmd_regress(a: argparse.Namespace) -> int:
-    from groot_eval.regression import load_suite, run_suite
+_CHECKPOINT_FIELDS = ("checkpoint.sha256", "policy", "policy_args")  # differ between baseline and candidate by design
 
+
+def _gate_latency_ok(a: argparse.Namespace) -> bool:
+    if (getattr(a, "latency_mode", None) or "").startswith("measured") and not a.allow_measured_latency:
+        print("refusing --latency-mode measured in a gate: it depends on machine load, so the same checkpoint can "
+              "pass and fail. Use fixed:<ms> or trace:<dir>, or pass --allow-measured-latency.", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_regress(a: argparse.Namespace) -> int:
+    from groot_eval.manifest import diff_manifests, unpinned
+    from groot_eval.regression import load_suite, parse_tolerances, run_suite
+
+    if not _gate_latency_ok(a):
+        return 2
+    suite = load_suite(a.suite)
+    quarantine = _load_quarantine(a.quarantine)
     env = make_env(a.env, **_kv(a.env_arg))
     policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env)
     recorder = _recorder(a, env, policy)
-    result = run_suite(env, policy, load_suite(a.suite), recorder=recorder)
+    manifest = _manifest(a, policy, None)
+    result = run_suite(env, policy, suite, recorder=recorder, repeats=a.repeats, quarantine=quarantine,
+                       tolerances=parse_tolerances(a.metric_tolerance))
     env.close()
     _write_trace(recorder, a)
+    # The suite stands in for the sweep config, so config_sha256 is not compared here.
+    warnings = diff_manifests(suite.get("manifest"), manifest, ignore=(*_CHECKPOINT_FIELDS, "config_sha256"))
+    blocking = warnings + [r for r in unpinned(manifest) if "uncommitted" not in r]
+    result["manifest_warnings"] = warnings + unpinned(manifest)
     text = report.regression_report(result)
     if a.out:
-        _write(Path(a.out), text)
+        out = Path(a.out)
+        _write(out, text)
+        _write(out.with_suffix(".json"), json.dumps({**result, "manifest": manifest}, indent=2, default=str))
     print(text)
+    if a.strict and blocking:
+        print("STRICT: this run is not comparable to (or not as pinned as) the suite's baseline")
+        return 2
     return 0 if result["passed_gate"] else 1
+
+
+def _load_quarantine(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {c["scenario_id"] for c in data.get("flaky", data if isinstance(data, list) else [])}
+
+
+def cmd_flaky(a: argparse.Namespace) -> int:
+    from groot_eval.regression import find_flaky, load_suite
+
+    if not _gate_latency_ok(a):
+        return 2
+    env = make_env(a.env, **_kv(a.env_arg))
+    policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env)
+    suite = load_suite(a.suite)
+    flaky = find_flaky(env, policy, suite, repeats=a.repeats)
+    env.close()
+    payload = {"policy": getattr(policy, "name", a.policy), "suite": a.suite, "repeats": a.repeats, "flaky": flaky}
+    _write(Path(a.out), json.dumps(payload, indent=2))
+    print(f"{len(flaky)} of {len(suite['cases'])} cases are flaky on {payload['policy']} over {a.repeats} runs")
+    for c in flaky:
+        print(f"  {c['scenario_id']} {c['name']}  pass rate {c['pass_rate']:.0%}")
+    return 0
 
 
 def cmd_open_loop(a: argparse.Namespace) -> int:
@@ -343,6 +419,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--policy", required=True, help="pd | pd-avoid | pd-chunk | groot://host:port | module:Class")
         sp.add_argument("--policy-arg", action="append", metavar="K=V")
 
+    def pin_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--checkpoint", metavar="PATH", help="checkpoint file or directory to hash into manifest.json")
+
+    def gate_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--repeats", type=int, default=1, help="runs per case; cases that change outcome are flaky")
+        sp.add_argument("--allow-measured-latency", action="store_true",
+                        help="permit --latency-mode measured (not reproducible)")
+
     def latency_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--latency-mode", metavar="MODE",
                         help="make the sim feel inference latency: measured | fixed:<ms> | normal:<mean>,<std> | trace:<dir>")
@@ -362,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     latency_args(sp)
     sp.add_argument("--export-pairs", metavar="CSV", help="append policy,scenario_id,domain=sim,success rows for `correlate`")
     sp.add_argument("--pairs-policy", metavar="LABEL", help="checkpoint label for --export-pairs (match the real runs)")
+    pin_args(sp)
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -369,6 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("candidate")
     sp.add_argument("--confidence", type=float, default=0.95)
     sp.add_argument("--out")
+    sp.add_argument("--strict", action="store_true", help="exit 2 if the runs' manifests differ beyond the checkpoint")
     sp.set_defaults(func=cmd_compare)
 
     sp = sub.add_parser("regress", help="replay a regression suite against a policy")
@@ -377,7 +463,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out")
     sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2)")
     latency_args(sp)
+    pin_args(sp)
+    gate_args(sp)
+    sp.add_argument("--quarantine", metavar="JSON", help="flaky cases (from `groot-eval flaky`) to report but not gate")
+    sp.add_argument("--metric-tolerance", action="append", metavar="NAME:lower|higher:TOL",
+                    help="also fail anchors whose metric worsened beyond TOL, e.g. final_distance:lower:0.02")
+    sp.add_argument("--strict", action="store_true",
+                    help="exit 2 if this run's manifest differs from the suite's or is not pinned")
     sp.set_defaults(func=cmd_regress)
+
+    sp = sub.add_parser("flaky", help="run a suite repeatedly on the baseline policy and list unstable cases")
+    common(sp)
+    sp.add_argument("--suite", required=True)
+    sp.add_argument("--out", required=True, help="quarantine JSON for `regress --quarantine`")
+    latency_args(sp)
+    gate_args(sp)
+    sp.set_defaults(func=cmd_flaky, repeats=5)
 
     sp = sub.add_parser("import-real", help="convert a real-robot LeRobot recording into a trace and validate it")
     sp.add_argument("dataset", help="LeRobot v2 dataset root")

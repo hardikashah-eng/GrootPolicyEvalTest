@@ -19,7 +19,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
 uv run python examples/run_sim2real_demo.py   # the sim-to-real loop against a synthetic robot, ~15 s
-uv run pytest                           # 83 tests
+uv run pytest                           # 92 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -59,7 +59,8 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 |---|---|
 | `groot-eval sweep` | Closed-loop evaluation over a randomization config. `--export-suite` saves failures; `--min-success 0.8` fails the command if the CI lower bound is below 0.8. |
 | `groot-eval compare BASE CAND` | Two-proportion test between two sweeps; exit 1 on significant regression. |
-| `groot-eval regress --suite` | Replay a regression suite; exit 1 if an anchor broke. |
+| `groot-eval regress --suite` | Replay a regression suite; exit 1 if an anchor broke. `--repeats K` runs each case K times and reports cases that change outcome as flaky instead of gating on them; `--quarantine` skips known-flaky cases; `--metric-tolerance final_distance:lower:0.02` also fails anchors that pass but got worse; `--strict` exits 2 if conditions differ from the suite's baseline. |
+| `groot-eval flaky --suite` | Run a suite repeatedly (default 5) on the baseline policy and write the unstable cases as a quarantine file. |
 | `groot-eval open-loop --dataset` | Score action chunks against a LeRobot v2 dataset. `--video` decodes camera streams listed in `modality.json`. |
 | `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`), plus a matching section that says which rows didn't join and why. |
 | `groot-eval sweep ... --export-pairs CSV` | Append the sweep's outcomes as `domain=sim` rows for `correlate`; `--pairs-policy` sets the checkpoint label to match the real runs. |
@@ -98,6 +99,17 @@ params:
 3. **Closed-loop** in simulation: implement an environment that emits GR00T's observation keys (`video.*`, `state.*`), or use `isaaclab:<Task>` with `param_setters` for the physics you want to randomize, then `groot-eval sweep --env ... --policy groot://localhost:5555`.
 
 The adapter maps observation keys (`obs_map`), concatenates the action keys you name (`action_keys`), adds batch dimensions, and passes the task instruction under `annotation.human.action.task_description`. The client class is looked up from known Isaac-GR00T import paths and can be overridden with `client_cls`.
+
+## Making regression gates reliable
+
+A gate is only useful if the same checkpoint gives the same verdict every time, and if a FAIL means the checkpoint changed rather than something else.
+
+* **Every run says how it was made.** `sweep` and `regress` write `manifest.json`: checkpoint hash (`--checkpoint PATH`, a file or directory), sweep-config hash, policy and env arguments, latency model, harness git SHA and `uv.lock` hash, package versions (torch, Isaac Sim/Lab, gr00t when installed), Python, platform and GPU. Suites store the baseline's manifest. `compare` and `regress` warn when anything other than the checkpoint differs; with `--strict` they exit 2 instead of reporting a verdict. A GR00T or custom policy without `--checkpoint` is flagged as unpinned.
+* **Repeats and flake quarantine.** `regress --repeats 5` runs each case five times on the same scenario. A case that passes some runs and fails others is listed as flaky and does not decide the gate. `groot-eval flaky --policy <baseline> --suite suite.json --out quarantine.json` finds cases that are flaky on the baseline itself, and `regress --quarantine quarantine.json` reports them without gating.
+* **Margins, not just pass/fail.** Suites now store each case's metrics (`final_distance`, `path_length`, `min_obstacle_clearance` for Reach2D; whatever `info["metrics"]` your env returns). `--metric-tolerance path_length:lower:0.1` fails an anchor that still passes but got worse than its baseline by more than the tolerance, which catches drift before it flips an outcome.
+* **Reproducible latency.** Gates refuse `--latency-mode measured`, which varies with machine load, unless you pass `--allow-measured-latency`. Sampled latency (`normal:`, `trace:`) is now seeded per scenario, so a case gets the same latency sequence whatever order the suite runs in. Policies can implement `set_episode_seed(seed)` to get the same per-scenario seed for their own randomness (e.g. a diffusion action head's noise).
+
+Not done yet, because they need a GPU: seeding GR00T inference itself (pass the episode seed to the server, or run the policy in-process with `torch.manual_seed` and deterministic kernels), a golden-action test (fixed observations, expected chunks, tolerance) that runs before any sim, and Isaac Lab determinism settings plus a trajectory-level double-run check.
 
 ## Debugging the sim-to-real gap
 
@@ -185,6 +197,7 @@ src/groot_eval/
   regression.py      suite export, replay, determinism check
   open_loop.py       LeRobot v2 reader/writer, chunk scoring
   correlation.py     sim-to-real agreement
+  manifest.py        run manifests: checkpoint hash, config hash, versions, latency model
   trace.py           step-level traces for sim and real (one LeRobot v2 schema), real-recording import
   checks.py          contract checks: keys, units, ranges, rates, image range, action order
   gap.py             signal-by-signal sim-to-real gap report

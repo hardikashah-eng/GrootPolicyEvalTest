@@ -96,20 +96,50 @@ def open_loop_report(summary: dict[str, Any]) -> str:
 
 
 def regression_report(r: dict[str, Any]) -> str:
+    repeats = r.get("repeats", 1)
+
+    def sid(e: dict[str, Any]) -> str:
+        return f"`{e['scenario_id']}`" + (f" ({e['name']})" if e.get("name") else "")
+
     def table(entries: list[dict[str, Any]]) -> list[str]:
         if not entries:
             return ["None.", ""]
+        if repeats > 1:
+            return ["| Scenario | Seed | Was | Now | Pass rate |", "|---|---|---|---|---|",
+                    *[f"| {sid(e)} | {e['seed']} | {e['was'] or 'pass'} | {e['now'] or 'pass'} | "
+                      f"{e['pass_rate']:.0%} of {repeats} |" for e in entries], ""]
         return ["| Scenario | Seed | Was | Now |", "|---|---|---|---|",
-                *[f"| `{e['scenario_id']}` | {e['seed']} | {e['was'] or 'pass'} | {e['now'] or 'pass'} |" for e in entries], ""]
+                *[f"| {sid(e)} | {e['seed']} | {e['was'] or 'pass'} | {e['now'] or 'pass'} |" for e in entries], ""]
 
+    def margins(entries: list[dict[str, Any]]) -> list[str]:
+        if not entries:
+            return ["None.", ""]
+        rows = ["| Scenario | Metric | Baseline | Now | Worse by | Tolerance |", "|---|---|---|---|---|---|"]
+        for e in entries:
+            for m in e["over_tolerance"]:
+                d = e["metrics"][m]
+                rows.append(f"| {sid(e)} | {m} | {d['was']:.4g} | {d['now']:.4g} | {d['worse_by']:.4g} | {d['tolerance']:.4g} |")
+        return [*rows, ""]
+
+    degraded, flaky, quarantined = r.get("degraded_anchors", []), r.get("flaky", []), r.get("quarantined", [])
     lines = [
         f"# Regression suite: `{r['policy']}`", "",
-        f"Suite from `{r['suite_source_policy']}`, {r['cases']} cases. Gate: **{'PASS' if r['passed_gate'] else 'FAIL'}** "
-        f"({len(r['broken_anchors'])} previously passing anchors broke).", "",
+        f"Suite from `{r['suite_source_policy']}`, {r['cases']} cases"
+        + (f", {repeats} runs each" if repeats > 1 else "") + f". Gate: **{'PASS' if r['passed_gate'] else 'FAIL'}** "
+        f"({len(r['broken_anchors'])} previously passing anchors broke, {len(degraded)} got worse than their tolerance).", "",
+    ]
+    if r.get("manifest_warnings"):
+        lines += ["## Not comparable to the suite's baseline?", "",
+                  *[f"* {w}" for w in r["manifest_warnings"]], ""]
+    lines += [
         f"## Fixed ({len(r['fixed'])})", "", *table(r["fixed"]),
         f"## Still failing ({len(r['still_failing'])})", "", *table(r["still_failing"]),
         f"## Broken anchors ({len(r['broken_anchors'])})", "", *table(r["broken_anchors"]),
+        f"## Anchors over their metric tolerance ({len(degraded)})", "", *margins(degraded),
+        f"## Flaky: outcome changed between repeats, not gated ({len(flaky)})", "", *table(flaky),
     ]
+    if quarantined:
+        lines += [f"## Quarantined: known flaky, not gated ({len(quarantined)})", "", *table(quarantined)]
     return "\n".join(lines)
 
 

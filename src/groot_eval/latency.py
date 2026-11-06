@@ -57,6 +57,10 @@ class LatencyModel:
             return cls("trace", (latencies_from_trace(rest),), seed)
         raise ValueError(f"latency mode must be measured, fixed:<ms>, normal:<mean>,<std> or trace:<dir>; got {spec!r}")
 
+    def reseed(self, episode_seed: int) -> None:
+        """Make the latency sequence a function of (model seed, episode seed), independent of run order."""
+        self._rng = np.random.default_rng([self.seed, int(episode_seed) & 0xFFFFFFFF])
+
     def sample(self, measured_ms: float) -> float:
         if self.kind == "measured":
             return measured_ms
@@ -137,6 +141,12 @@ class RealTimePolicy:
         self.inference_calls = 0
         self.last_latency_ms = 0.0
         self.delays: list[int] = []
+
+    def set_episode_seed(self, seed: int) -> None:
+        self.latency.reseed(seed)
+        inner = getattr(self.inner, "set_episode_seed", None)
+        if inner is not None:
+            inner(seed)
 
     def act(self, obs: Obs) -> np.ndarray:
         k = self._k
