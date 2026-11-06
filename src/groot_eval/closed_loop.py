@@ -14,10 +14,21 @@ import numpy as np
 from groot_eval.envs.base import Env
 from groot_eval.policies.base import Policy
 from groot_eval.stats import wilson_interval
+from groot_eval.trace import TraceRecorder
 from groot_eval.types import EpisodeResult, Scenario
 
 
-def run_episode(env: Env, policy: Policy, scenario: Scenario) -> EpisodeResult:
+def run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRecorder | None = None) -> EpisodeResult:
+    """Run one episode. With a ``recorder``, every step is also written to a trace."""
+    if recorder is None:
+        return _run_episode(env, policy, scenario, None)
+    recorder.start_episode(scenario.task, scenario=scenario.to_dict())
+    result = _run_episode(env, policy, scenario, recorder)
+    recorder.end_episode(success=result.success, failure_reason=result.failure_reason)
+    return result
+
+
+def _run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRecorder | None) -> EpisodeResult:
     obs = env.reset(scenario)
     policy.reset(scenario.task)
     total = 0.0
@@ -33,8 +44,13 @@ def run_episode(env: Env, policy: Policy, scenario: Scenario) -> EpisodeResult:
         latencies.append((time.perf_counter() - t0) * 1000)
         if not np.all(np.isfinite(np.asarray(action, dtype=float))):
             return EpisodeResult(scenario, False, steps, total, "non_finite_action", latencies)
+        seen = obs
         obs, reward, terminated, truncated, info = env.step(action)
         total += float(reward)
+        if recorder is not None:
+            recorder.record_step(seen, action, latency_ms=latencies[-1], reward=float(reward), wall_time=t0,
+                                 chunk_index=getattr(policy, "last_chunk_index", -1),
+                                 chunk_step=getattr(policy, "last_chunk_step", -1))
         if terminated or truncated:
             break
     else:
@@ -93,10 +109,11 @@ def evaluate(
     scenarios: Iterable[Scenario],
     env_name: str = "",
     progress: Callable[[int, EpisodeResult], None] | None = None,
+    recorder: TraceRecorder | None = None,
 ) -> EvalRun:
     run = EvalRun(policy=getattr(policy, "name", type(policy).__name__), env=env_name)
     for i, scenario in enumerate(scenarios):
-        result = run_episode(env, policy, scenario)
+        result = run_episode(env, policy, scenario, recorder)
         run.results.append(result)
         if progress:
             progress(i, result)

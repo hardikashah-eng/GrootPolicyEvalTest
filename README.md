@@ -10,6 +10,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 * **Regression suites** save every failing scenario (exact seed and parameters) and replay them against the next checkpoint: what got fixed, what still fails, and which previously passing anchors broke.
 * **Open-loop evaluation** scores predicted action chunks against recorded demonstrations in **LeRobot v2 format** (the format GR00T fine-tuning uses), including how error grows along the action chunk.
 * **Sim-to-real correlation** checks whether simulation ranks checkpoints the same way the real robot does, and which scenarios disagree most.
+* **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, and ranks every signal by how far sim and real drift apart (see [below](#debugging-the-sim-to-real-gap)).
 * **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus a built-in CPU simulator so the whole workflow runs on a laptop.
 
 ## Quick start
@@ -17,7 +18,7 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 ```bash
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
-uv run pytest                           # 35 tests
+uv run pytest                           # 57 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -60,6 +61,10 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval regress --suite` | Replay a regression suite; exit 1 if an anchor broke. |
 | `groot-eval open-loop --dataset` | Score action chunks against a LeRobot v2 dataset. `--video` decodes camera streams listed in `modality.json`. |
 | `groot-eval correlate pairs.csv` | Sim-to-real agreement from paired results (`policy, scenario_id, domain, success`). |
+| `groot-eval sweep ... --trace DIR` | Also write every step (observations, actions, timing, chunk position) as a LeRobot v2 trace. Works on `regress` too. |
+| `groot-eval import-real DATASET --out DIR` | Convert a real-robot LeRobot recording into a trace and validate it (missing columns, NaNs, declared fps vs timestamps, jitter). `--video` adds image statistics. |
+| `groot-eval check --reference REAL` | Contract check of an env rollout (`--env`, `--policy`) or a trace (`--traces`) against a reference: keys, dimensions, degrees vs radians, scale and offset, gripper scaling, control rate, image range and resolution, GR00T action-key order. Exit 1 on errors. |
+| `groot-eval gap SIM REAL --out DIR` | Sim-to-real gap report: signals ranked by distance, timing and latency, action-chunk boundaries, outcomes. `--plots` adds histograms (needs matplotlib). |
 | `groot-eval make-demo-data` | Record a small LeRobot-format dataset from the built-in simulator. |
 | `groot-eval plan --margin 0.05` | Episodes needed for a given confidence-interval width. |
 
@@ -89,6 +94,45 @@ params:
 
 The adapter maps observation keys (`obs_map`), concatenates the action keys you name (`action_keys`), adds batch dimensions, and passes the task instruction under `annotation.human.action.task_description`. The client class is looked up from known Isaac-GR00T import paths and can be overridden with `client_cls`.
 
+## Debugging the sim-to-real gap
+
+Success rates say *that* sim and real differ. Finding *why* needs both sides recorded the same way, so they can be compared signal by signal.
+
+**1. Record both sides in one format.** A trace is a LeRobot v2 dataset (what GR00T fine-tuning uses, so `open-loop` reads it unchanged) with extra per-step columns: `timestamp`, `wall_time`, `inference_latency_ms`, `chunk_index`, `chunk_step`, `reward`, and `image.<camera>.{brightness,contrast,sharpness,height,width,max_value}` for each `video.*` key. `meta/trace_info.json` records `domain: sim|real`, the control period and the observation keys. The full schema is in [`trace.py`](src/groot_eval/trace.py).
+
+* Sim: `groot-eval sweep ... --trace traces/sim`.
+* Real, from your own control loop: the same recorder, three calls:
+
+  ```python
+  from groot_eval.trace import TraceRecorder
+  rec = TraceRecorder(domain="real", env="my_cell", policy="groot@robot", control_dt=1 / 30)
+  rec.start_episode("pick up the cup")
+  # each step: the obs the policy saw, the action it returned, how long inference took
+  rec.record_step(obs, action, latency_ms=ms, timestamp=robot_clock_s)
+  rec.end_episode(success=True)
+  rec.write("traces/real")
+  ```
+* Real, from an existing LeRobot recording: `groot-eval import-real my_dataset --out traces/real`.
+
+**2. Check the contract before the physics.** Many sim-to-real gaps turn out to be bugs:
+* a joint in degrees on one side and radians on the other;
+* a float image in [0, 1] that `astype(uint8)` turns black;
+* a gripper commanded 0–1 in sim and 0–100 on the robot;
+* action groups concatenated in another order;
+* data recorded at 30 Hz driving a 20 Hz controller.
+
+`groot-eval check --reference traces/real --env <sim> --policy <ckpt>` looks for each of these. The GR00T adapter now scales [0, 1] float images instead of zeroing them, and warns when `action_keys` isn't set.
+
+**3. Find the gap.** `groot-eval gap traces/sim traces/real --out runs/gap` writes `gap.md` and `gap.json` ([synthetic sample](docs/sample-reports/gap_SYNTHETIC.md)):
+* **Signal ranking:** every state dimension, action dimension, per-step action change and image statistic, ranked by Wasserstein distance in pooled standard deviations, each with a KS test and a likely-cause hint.
+* **Timing:** control-period jitter and inference latency, also expressed in control steps. Sim waits for the policy, the robot doesn't, so this tells you how much delay sim is missing.
+* **Action chunking:** how much the command jumps when a new chunk starts, compared with steps inside a chunk.
+* **Outcomes:** success rates with intervals.
+
+In a CPU check, the sim had friction 0.4–0.8, and the stand-in "real" had friction 0.9–1.2, sensor noise and 2 steps of hidden actuation delay. Contract checks came out clean. The chunk-boundary jump ratio was 2.5 on "real" versus 1.3 in sim, which points at the missing delay, and actions were jerkier on "real".
+
+The comparison is between distributions, not matched trajectories. Some differences are behaviour rather than physics, so check observation rows before action rows. Replaying real actions in sim is the natural next step for telling the two apart.
+
 ## Status and limits
 
 * **Tested here:** everything that runs on a CPU, including statistics, sweeps, attribution, comparison, regression suites, the LeRobot reader and writer, open-loop scoring, correlation, the CLI, and the GR00T adapter against a fake client.
@@ -108,6 +152,9 @@ src/groot_eval/
   regression.py      suite export, replay, determinism check
   open_loop.py       LeRobot v2 reader/writer, chunk scoring
   correlation.py     sim-to-real agreement
+  trace.py           step-level traces for sim and real (one LeRobot v2 schema), real-recording import
+  checks.py          contract checks: keys, units, ranges, rates, image range, action order
+  gap.py             signal-by-signal sim-to-real gap report
   report.py          Markdown reports
   envs/              Reach2D simulator, Isaac Lab adapter
   policies/          reference controllers, action chunking, GR00T server adapter

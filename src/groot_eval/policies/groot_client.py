@@ -22,6 +22,7 @@ checkpoint's ``modality.json`` / data config before trusting results.
 from __future__ import annotations
 
 import importlib
+import warnings
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,28 @@ KNOWN_CLIENTS = [
 ]
 
 DEFAULT_LANGUAGE_KEY = "annotation.human.action.task_description"
+
+
+_warned_float_video: set[str] = set()
+
+
+def _to_uint8(arr: np.ndarray, key: str) -> np.ndarray:
+    """Convert a camera frame to uint8 without silently destroying it.
+
+    A plain ``astype(uint8)`` turns a float image in [0, 1] (common from
+    simulators and torchvision) into an all-black frame, and wraps values above
+    255. Floats in [0, 1] are scaled to [0, 255]; everything else is rounded
+    and clipped.
+    """
+    if arr.dtype == np.uint8:
+        return arr
+    if np.issubdtype(arr.dtype, np.floating) and arr.size and float(np.nanmax(arr)) <= 1.0:
+        if key not in _warned_float_video:
+            _warned_float_video.add(key)
+            warnings.warn(f"{key} is a float image in [0, 1]; scaling to 0-255 uint8. Check the real camera "
+                          "pipeline sends the same range.", stacklevel=3)
+        arr = arr * 255.0
+    return np.clip(np.rint(np.nan_to_num(arr)), 0, 255).astype(np.uint8)
 
 
 def _load_client_cls(spec: str | None):
@@ -84,6 +107,7 @@ class GrootServerPredictor:
         self.language_key = language_key
         self.task = ""
         self.name = f"groot@{host}:{port}"
+        self._warned_order = False
 
     def reset(self, task: str) -> None:
         self.task = task
@@ -96,7 +120,7 @@ class GrootServerPredictor:
             out_key = self.obs_map.get(key, key)
             arr = np.asarray(value)
             if out_key.startswith("video."):
-                arr = arr.astype(np.uint8)
+                arr = _to_uint8(arr, out_key)
                 if arr.ndim == 3:  # H, W, C -> 1, H, W, C
                     arr = arr[None]
             elif out_key.startswith("state."):
@@ -113,6 +137,11 @@ class GrootServerPredictor:
         keys = self.action_keys or sorted(k for k in reply if k.startswith("action."))
         if not keys:
             raise ValueError(f"server reply has no action.* keys: {sorted(reply)}")
+        if not self.action_keys and len(keys) > 1 and not self._warned_order:
+            self._warned_order = True
+            warnings.warn(f"no action_keys given: concatenating {keys} in alphabetical order. If the robot expects "
+                          "another order (check modality.json), every joint gets the wrong command; pass action_keys.",
+                          stacklevel=2)
         parts = []
         for key in keys:
             arr = np.asarray(reply[key], dtype=float)

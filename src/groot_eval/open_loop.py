@@ -98,6 +98,15 @@ class _VideoReader:
             raise IndexError(f"frame {index} unreadable")
         return self._cv2.cvtColor(bgr, self._cv2.COLOR_BGR2RGB)
 
+    def iter_frames(self):
+        """Every frame in order, without seeking (much faster than ``frame(i)`` in a loop)."""
+        self.cap.set(self._cv2.CAP_PROP_POS_FRAMES, 0)
+        while True:
+            ok, bgr = self.cap.read()
+            if not ok:
+                return
+            yield self._cv2.cvtColor(bgr, self._cv2.COLOR_BGR2RGB)
+
     def close(self) -> None:
         self.cap.release()
 
@@ -199,24 +208,40 @@ def write_lerobot_dataset(
     fps: int = 20,
     modality: dict[str, Any] | None = None,
 ) -> Path:
-    """Write episodes (``{"task", "states": (T,S), "actions": (T,A)}``) as a LeRobot v2 dataset."""
+    """Write episodes (``{"task", "states": (T,S), "actions": (T,A)}``) as a LeRobot v2 dataset.
+
+    An episode may also carry ``extra`` (column name -> length-T array, written
+    as additional parquet columns; ``timestamp`` here overrides the fps-derived
+    one) and ``meta`` (extra keys for its ``episodes.jsonl`` line). Standard
+    LeRobot readers ignore both.
+    """
     root = Path(root)
     (root / "meta").mkdir(parents=True, exist_ok=True)
     lines = []
+    extra_features: dict[str, Any] = {}
+    offset = 0
     for i, ep in enumerate(episodes):
         states, actions = np.asarray(ep["states"], dtype=np.float32), np.asarray(ep["actions"], dtype=np.float32)
-        path = root / DEFAULT_DATA_PATH.format(episode_chunk=0, episode_index=i)
+        path = root / DEFAULT_DATA_PATH.format(episode_chunk=i // 1000, episode_index=i)
         path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({
+        cols: dict[str, Any] = {
             "observation.state": list(states),
             "action": list(actions),
             "timestamp": np.arange(len(states), dtype=np.float32) / fps,
             "frame_index": np.arange(len(states)),
             "episode_index": i,
-            "index": np.arange(len(states)),
+            "index": offset + np.arange(len(states)),
             "task_index": 0,
-        }).to_parquet(path)
-        lines.append(json.dumps({"episode_index": i, "tasks": [ep.get("task", "")], "length": len(states)}))
+        }
+        for key, values in (ep.get("extra") or {}).items():
+            arr = np.asarray(values)
+            if len(arr) != len(states):
+                raise ValueError(f"episode {i}: column {key!r} has {len(arr)} rows, expected {len(states)}")
+            cols[key] = arr
+            extra_features.setdefault(key, {"dtype": str(arr.dtype), "shape": [1]})
+        pd.DataFrame(cols).to_parquet(path)
+        offset += len(states)
+        lines.append(json.dumps({"episode_index": i, "tasks": [ep.get("task", "")], "length": len(states), **(ep.get("meta") or {})}))
     (root / "meta" / "episodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     state_dim = int(np.asarray(episodes[0]["states"]).shape[1])
     action_dim = int(np.asarray(episodes[0]["actions"]).shape[1])
@@ -230,6 +255,7 @@ def write_lerobot_dataset(
         "features": {
             "observation.state": {"dtype": "float32", "shape": [state_dim]},
             "action": {"dtype": "float32", "shape": [action_dim]},
+            **{k: v for k, v in extra_features.items() if k != "timestamp"},
         },
     }
     (root / "meta" / "info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")

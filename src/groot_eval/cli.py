@@ -57,7 +57,85 @@ def _load_run(path: Path) -> EvalRun:
     return run
 
 
+def _recorder(a: argparse.Namespace, env: Any, policy: Any):
+    if not getattr(a, "trace", None):
+        return None
+    from groot_eval.trace import TraceRecorder
+
+    return TraceRecorder(domain="sim", env=a.env, policy=getattr(policy, "name", a.policy), control_dt=getattr(env, "dt", None))
+
+
+def _write_trace(recorder: Any, a: argparse.Namespace) -> None:
+    if recorder is not None and recorder.episodes:
+        root = recorder.write(a.trace)
+        print(f"  wrote trace of {len(recorder.episodes)} episodes to {root}")
+
+
+def _print_findings(findings: list[Any]) -> None:
+    for f in findings:
+        if f.level != "ok":
+            print(f"  {f.level.upper():5s} {f.check}: {f.detail}")
+    n_err = sum(f.level == "error" for f in findings)
+    n_warn = sum(f.level == "warn" for f in findings)
+    print(f"{n_err} errors, {n_warn} warnings")
+
+
 # -- commands -------------------------------------------------------------
+def cmd_import_real(a: argparse.Namespace) -> int:
+    from groot_eval.checks import findings_markdown
+    from groot_eval.trace import import_real
+
+    root, findings = import_real(a.dataset, a.out, video=a.video, domain=a.domain, env=a.env_name or "", policy=a.policy_name or "")
+    _write(root / "meta" / "import_report.md", findings_markdown(findings, f"Import of {a.dataset}"))
+    _print_findings(findings)
+    return 1 if any(f.level == "error" for f in findings) else 0
+
+
+def cmd_check(a: argparse.Namespace) -> int:
+    from groot_eval.checks import check_policy, check_sources, findings_markdown, source_from_env, source_from_traces
+    from groot_eval.trace import TraceSet
+
+    ref_ts = TraceSet.open(a.reference)
+    ref = source_from_traces(ref_ts, "reference")
+    policy = None
+    if a.traces:
+        cand = source_from_traces(TraceSet.open(a.traces), "candidate")
+    else:
+        env = make_env(a.env, **_kv(a.env_arg))
+        policy = make_policy(a.policy, **_kv(a.policy_arg)) if a.policy else None
+        scenarios = list(SweepConfig.load(a.config).scenarios())[: a.episodes] if a.config else [Scenario(seed=i) for i in range(a.episodes)]
+        dim = ref.action.shape[1] if ref.action.size else None
+        cand = source_from_env(env, policy, scenarios, action_dim=dim, name=a.env)
+        env.close()
+    findings = check_sources(cand, ref)
+    if policy is not None:
+        findings += check_policy(policy, ref)
+    text = findings_markdown(findings, f"Contract check: {cand.name} vs {a.reference}")
+    if a.out:
+        _write(Path(a.out), text)
+    _print_findings(findings)
+    return 1 if any(f.level == "error" for f in findings) else 0
+
+
+def cmd_gap(a: argparse.Namespace) -> int:
+    from groot_eval.gap import gap_analysis, gap_markdown, write_plots
+    from groot_eval.trace import TraceSet
+
+    sim, real = TraceSet.open(a.sim), TraceSet.open(a.real)
+    result = gap_analysis(sim, real, labels=(a.label_a, a.label_b))
+    out = Path(a.out)
+    _write(out / "gap.json", json.dumps(result, indent=2, default=str))
+    _write(out / "gap.md", gap_markdown(result, top=a.top))
+    if a.plots:
+        paths = write_plots(result, sim, real, out / "plots", top=a.top)
+        print(f"  wrote {len(paths)} plots to {out / 'plots'}" if paths else "  matplotlib not installed; no plots")
+    errors = sum(c["level"] == "error" for c in result["contract"])
+    print(f"Contract: {errors} errors. Largest gaps:")
+    for r in result["signals"][:5]:
+        print(f"  {r['group']}:{r['signal']}  W1/sigma={r['w1_norm']:.2f}  ({r['hint']})")
+    return 0
+
+
 def cmd_sweep(a: argparse.Namespace) -> int:
     cfg = SweepConfig.load(a.config)
     if a.episodes:
@@ -71,10 +149,12 @@ def cmd_sweep(a: argparse.Namespace) -> int:
         if (i + 1) % max(1, len(scenarios) // 10) == 0:
             print(f"  {i + 1}/{len(scenarios)}")
 
-    run = evaluate(env, policy, scenarios, env_name=a.env, progress=progress)
+    recorder = _recorder(a, env, policy)
+    run = evaluate(env, policy, scenarios, env_name=a.env, progress=progress, recorder=recorder)
     env.close()
     out = Path(a.out)
     s = _save_run(run, out, a.confidence)
+    _write_trace(recorder, a)
     if a.export_suite:
         from groot_eval.regression import export_suite
 
@@ -108,8 +188,10 @@ def cmd_regress(a: argparse.Namespace) -> int:
 
     env = make_env(a.env, **_kv(a.env_arg))
     policy = make_policy(a.policy, **_kv(a.policy_arg))
-    result = run_suite(env, policy, load_suite(a.suite))
+    recorder = _recorder(a, env, policy)
+    result = run_suite(env, policy, load_suite(a.suite), recorder=recorder)
     env.close()
+    _write_trace(recorder, a)
     text = report.regression_report(result)
     if a.out:
         _write(Path(a.out), text)
@@ -207,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--export-suite", action="store_true", help="save failures as a regression suite")
     sp.add_argument("--anchors", type=int, default=5)
     sp.add_argument("--min-success", type=float, help="exit 1 if the CI lower bound is below this")
+    sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2) for sim-to-real comparison")
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -220,7 +303,39 @@ def build_parser() -> argparse.ArgumentParser:
     common(sp)
     sp.add_argument("--suite", required=True)
     sp.add_argument("--out")
+    sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (LeRobot v2)")
     sp.set_defaults(func=cmd_regress)
+
+    sp = sub.add_parser("import-real", help="convert a real-robot LeRobot recording into a trace and validate it")
+    sp.add_argument("dataset", help="LeRobot v2 dataset root")
+    sp.add_argument("--out", required=True, help="where to write the trace")
+    sp.add_argument("--video", action="store_true", help="decode camera streams to compute image statistics (needs opencv)")
+    sp.add_argument("--domain", default="real", choices=["real", "sim"])
+    sp.add_argument("--env-name", help="label stored in trace_info.json")
+    sp.add_argument("--policy-name", help="label stored in trace_info.json")
+    sp.set_defaults(func=cmd_import_real)
+
+    sp = sub.add_parser("check", help="contract check: units, ranges, keys, rates, image range vs a reference dataset")
+    sp.add_argument("--reference", required=True, help="trace or LeRobot dataset to check against (usually the real one)")
+    sp.add_argument("--traces", help="compare this trace instead of rolling out an env")
+    sp.add_argument("--env", default="reach2d")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--policy", help="policy to drive the env (zero actions if omitted)")
+    sp.add_argument("--policy-arg", action="append", metavar="K=V")
+    sp.add_argument("--config", help="sweep config whose first scenarios are rolled out")
+    sp.add_argument("--episodes", type=int, default=3)
+    sp.add_argument("--out", help="write the findings as Markdown")
+    sp.set_defaults(func=cmd_check)
+
+    sp = sub.add_parser("gap", help="signal-by-signal sim-to-real gap report from two traces")
+    sp.add_argument("sim", help="simulation trace (or any LeRobot dataset)")
+    sp.add_argument("real", help="real-robot trace (or any LeRobot dataset)")
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--top", type=int, default=15, help="rows in the ranked table")
+    sp.add_argument("--plots", action="store_true", help="histograms of the top signals (needs matplotlib)")
+    sp.add_argument("--label-a", default="sim")
+    sp.add_argument("--label-b", default="real")
+    sp.set_defaults(func=cmd_gap)
 
     sp = sub.add_parser("open-loop", help="score action chunks against recorded demonstrations")
     common(sp, needs_env=False)
