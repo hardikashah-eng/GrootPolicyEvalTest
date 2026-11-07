@@ -2,6 +2,8 @@
 
 * ``pd``, ``pd-avoid`` - reference controllers for the Reach2D simulator.
 * ``pd-chunk`` - a chunked (VLA-style) reference controller.
+* ``arm-ik``, ``arm-ik-robust`` - reference controllers for the Arm3 simulator
+  (the robust one detects faulty joints and works around them).
 * ``groot://host:port`` - a running Isaac-GR00T inference server.
 * ``package.module:ClassName`` - any object with ``reset(task)`` and ``act(obs)``
   or ``predict_chunk(obs)``.
@@ -35,6 +37,11 @@ def make_policy(spec: str, **kwargs: Any) -> Policy:
         from groot_eval.policies.scripted import PDChunkPredictor
 
         obj = PDChunkPredictor(**kwargs)
+    elif spec in ("arm-ik", "arm-ik-robust"):
+        from groot_eval.policies.scripted import ArmIKPolicy
+
+        kwargs.setdefault("robust", spec == "arm-ik-robust")
+        obj = ArmIKPolicy(**kwargs)
     elif spec.startswith("groot://"):
         from groot_eval.policies.groot_client import GrootServerPredictor
 

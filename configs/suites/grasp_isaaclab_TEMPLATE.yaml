@@ -1,0 +1,16 @@
+# TEMPLATE for a grasping suite on Isaac Lab (see walk_isaaclab_TEMPLATE.yaml for how to wire it).
+skill: grasp
+task: "pick up the object and lift it"
+design: [oat, corners, lhs]
+repeats: 10
+lhs_samples: 200
+corner_conditions: [object_size_m, object_mass_kg, object_friction, approach_speed]
+conditions:
+  object_size_m:   {min: 0.02, nominal: 0.05, max: 0.10}
+  object_mass_kg:  {min: 0.05, nominal: 0.3,  max: 1.5}
+  object_friction: {min: 0.3,  nominal: 0.8,  max: 1.2}
+  pose_noise_m:    {min: 0.0,  nominal: 0.0,  max: 0.02}
+  clutter_count:   {min: 0,    nominal: 2,    max: 8, integer: true}
+  lighting_lux:    {min: 50,   nominal: 500,  max: 5000}
+  approach_speed:  {min: 0.05, nominal: 0.15, max: 0.4}
+metrics: [grasp_success, slip_after_lift, regrasps, contact_force_peak]

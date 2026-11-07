@@ -185,6 +185,8 @@ def cmd_sweep(a: argparse.Namespace) -> int:
     env = make_env(a.env, **_kv(a.env_arg))
     policy = _latency(a, make_policy(a.policy, **_kv(a.policy_arg)), env, cfg.seed)
     scenarios = list(cfg.scenarios())
+    if a.wear or a.faults:
+        env, scenarios = _degraded_env(a, env, scenarios)
     print(f"Evaluating {getattr(policy, 'name', a.policy)} on {a.env}: {len(scenarios)} episodes")
 
     def progress(i: int, r: EpisodeResult) -> None:
@@ -332,15 +334,190 @@ def cmd_plan(a: argparse.Namespace) -> int:
     return 0
 
 
+
+# -- robustness: aging, faults, skill suites, data fidelity -----------------------------------
+def _save_episodes(run: EvalRun, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "episodes.jsonl", "w", encoding="utf-8") as fh:
+        for r in run.results:
+            fh.write(json.dumps({**r.to_dict(), "latencies_ms": r.policy_latency_ms}, default=str) + "\n")
+    _write(out / "summary.json", json.dumps(run.summary(), indent=2))
+
+
+def _base_scenarios(a: argparse.Namespace) -> list[Scenario]:
+    if not a.config:
+        return [Scenario(seed=i) for i in range(a.episodes or 100)]
+    cfg = SweepConfig.load(a.config)
+    if a.episodes:
+        cfg.episodes = a.episodes
+    scen = list(cfg.scenarios())
+    return scen[: a.episodes] if a.episodes else scen
+
+
+def _degraded_env(a: argparse.Namespace, base_env: Any, scenarios: list[Scenario]) -> tuple[Any, list[Scenario]]:
+    """Wrap with WearEnv / FaultEnv when --wear/--profile or --faults are given."""
+    from groot_eval.degradation import FaultConfig, FaultEnv, WearConfig, WearEnv, aged_scenarios, faulted_scenarios
+    from groot_eval.degradation.components import probe_components
+
+    env = base_env
+    comps = None
+    if getattr(a, "wear", None):
+        if not a.profile:
+            raise SystemExit("--wear needs --profile")
+        comps = probe_components(make_env(a.env, **_kv(a.env_arg)))
+        scenarios = aged_scenarios(scenarios, WearConfig.load(a.wear), a.profile, comps)
+        env = WearEnv(env)
+    if getattr(a, "faults", None):
+        comps = comps or probe_components(make_env(a.env, **_kv(a.env_arg)))
+        fcfg = FaultConfig.load(a.faults)
+        scenarios = faulted_scenarios(scenarios, fcfg, comps, int(base_env.max_steps), float(getattr(base_env, "dt", 0.05)))
+        env = FaultEnv(env)
+    return env, scenarios
+
+
+def cmd_aging(a: argparse.Namespace) -> int:
+    from groot_eval.degradation import WearConfig
+    from groot_eval.degradation.components import probe_components
+    from groot_eval.degradation.reports import aging_markdown
+    from groot_eval.degradation.runners import aging_summary, dof_loss_matrix, run_aging
+
+    wear = WearConfig.load(a.wear)
+    profiles = a.profiles.split(",") if a.profiles else wear.ordered_profiles()
+    base = _base_scenarios(a)
+    env_args = _kv(a.env_arg)
+    comps = probe_components(make_env(a.env, **env_args))
+    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    print(f"Aging {getattr(policy, 'name', a.policy)} on {a.env}: {len(base)} scenarios x {len(profiles)} profiles")
+    out = Path(a.out)
+
+    def progress(prof: str, run: EvalRun) -> None:
+        s = run.summary(a.confidence)
+        print(f"  {prof:>12s}: {100 * s['success_rate']:.1f}% [{100 * s['ci_low']:.1f}, {100 * s['ci_high']:.1f}]")
+        _save_episodes(run, out / "profiles" / prof)
+
+    runs = run_aging(lambda: make_env(a.env, **env_args), policy, base, wear, profiles, comps, progress)
+    gate_profile, gate_value = (a.min_success_at[0], float(a.min_success_at[1])) if a.min_success_at else (None, None)
+    summary = aging_summary(runs, gate=gate_value if gate_value is not None else a.margin_gate, confidence=a.confidence)
+    dof = None
+    if a.dof_episodes:
+        print(f"  DOF-loss matrix: {a.dof_episodes} scenarios per cell")
+        dof = dof_loss_matrix(lambda: make_env(a.env, **env_args), policy, base[: a.dof_episodes], comps,
+                              confidence=a.confidence)
+    _write(out / "aging.json", json.dumps({**summary, "dof_loss": dof}, indent=2, default=str))
+    _write(out / "aging.md", aging_markdown(summary, dof))
+    if gate_profile:
+        row = next((r for r in summary["profiles"] if r["profile"] == gate_profile), None)
+        if row is None:
+            print(f"GATE ERROR: profile {gate_profile!r} was not run")
+            return 2
+        if row["ci_low"] < gate_value:
+            print(f"GATE FAIL: at {gate_profile} the success lower bound {row['ci_low']:.3f} < {gate_value}")
+            return 1
+    return 0
+
+
+def cmd_faults(a: argparse.Namespace) -> int:
+    from groot_eval.degradation.reports import faults_markdown
+    from groot_eval.degradation.runners import fault_gate, fault_summary
+
+    base = _base_scenarios(a)
+    env0 = make_env(a.env, **_kv(a.env_arg))
+    env, scenarios = _degraded_env(a, env0, base)
+    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    print(f"Fault campaign: {getattr(policy, 'name', a.policy)} on {a.env}, {len(scenarios)} episodes")
+    recorder = _recorder(a, env0, policy)
+    run = evaluate(env, policy, scenarios, env_name=a.env, recorder=recorder)
+    out = Path(a.out)
+    _save_episodes(run, out)
+    _write_trace(recorder, a)
+    summary = fault_summary(run, a.confidence)
+    failures = fault_gate(summary, a.min_safe, a.max_unsafe) if (a.min_safe is not None or a.max_unsafe is not None) else None
+    _write(out / "faults.json", json.dumps({**summary, "gate_failures": failures}, indent=2, default=str))
+    _write(out / "faults.md", faults_markdown(summary, failures))
+    if a.export_suite:
+        from groot_eval.regression import export_suite
+
+        suite = export_suite(run, out / "suite.json", anchors=a.anchors, note="fault campaign")
+        print(f"  wrote {out / 'suite.json'} ({len(suite['cases'])} cases)")
+    o = summary["overall"]
+    if o.get("episodes"):
+        print(f"Faulted episodes {o['episodes']}: success {100 * o['success']['rate']:.1f}%, safe outcome "
+              f"{100 * o['safe']['rate']:.1f}% [{100 * o['safe']['ci_low']:.1f}, {100 * o['safe']['ci_high']:.1f}], "
+              f"unsafe {100 * o['unsafe']['rate']:.1f}%")
+    if failures:
+        print("GATE FAIL: " + "; ".join(failures))
+        return 1
+    return 0
+
+
+def cmd_suite(a: argparse.Namespace) -> int:
+    from groot_eval.suites import SuiteConfig, suite_gate, suite_markdown, suite_summary
+
+    cfg = SuiteConfig.load(a.config)
+    if a.repeats:
+        cfg.repeats = a.repeats
+    if a.lhs_samples is not None:
+        cfg.lhs_samples = a.lhs_samples
+    if a.design:
+        cfg.design = a.design.split(",")
+    env0 = make_env(a.env, **_kv(a.env_arg))
+    env, scenarios = _degraded_env(a, env0, cfg.scenarios())
+    policy = make_policy(a.policy, **_kv(a.policy_arg))
+    print(f"Suite {cfg.skill}: {getattr(policy, 'name', a.policy)} on {a.env}, {len(scenarios)} episodes ({', '.join(cfg.design)})")
+    recorder = _recorder(a, env0, policy)
+    run = evaluate(env, policy, scenarios, env_name=a.env, recorder=recorder)
+    out = Path(a.out)
+    _save_episodes(run, out)
+    _write_trace(recorder, a)
+    summary = suite_summary(cfg, run, a.confidence)
+    failures = suite_gate(summary, a.min_oat, a.min_corner) if (a.min_oat is not None or a.min_corner is not None) else None
+    _write(out / "suite.json", json.dumps({**summary, "gate_failures": failures}, indent=2, default=str))
+    _write(out / "suite.md", suite_markdown(summary, cfg, failures))
+    o = summary["overall"]
+    print(f"Overall {100 * o['rate']:.1f}% [{100 * o['ci_low']:.1f}, {100 * o['ci_high']:.1f}]")
+    if failures:
+        print(f"GATE FAIL: {len(failures)} cell(s) significantly below the bar, e.g. {failures[0]}")
+        return 1
+    return 0
+
+
+def cmd_fidelity(a: argparse.Namespace) -> int:
+    from groot_eval import fidelity
+    from groot_eval.trace import TraceSet
+
+    if a.write_manifest:
+        for root in a.write_manifest:
+            print(f"  wrote {fidelity.write_manifest(root)}")
+        return 0
+    if not (a.sim and a.real and a.out):
+        raise SystemExit("fidelity needs --sim, --real and --out (or --write-manifest DIR)")
+    cfg, cfg_direction = fidelity.load_gates(a.gates)
+    direction = a.direction or cfg_direction or "sim2real"
+    env = make_env(a.env, **_kv(a.env_arg)) if a.env else None
+    sysid = SweepConfig.load(a.sysid_config) if a.sysid_config else None
+    results = fidelity.run_gates(TraceSet.open(a.sim), TraceSet.open(a.real), cfg, direction, env=env,
+                                 params=_kv(a.param), sysid=sysid, pairs=a.pairs)
+    out = Path(a.out)
+    _write(out / "fidelity.json", json.dumps({"direction": direction, "exit_code": fidelity.exit_code(results),
+                                             "gates": [r.to_dict() for r in results]}, indent=2))
+    _write(out / "fidelity.md", fidelity.fidelity_markdown(results, a.sim, a.real, direction))
+    for r in results:
+        bad = [f for f in r.findings if f.level == "error"]
+        print(f"  {r.gate:17s} {r.status.upper():5s}" + (f"  {bad[0].check}: {bad[0].detail[:110]}" if bad else ""))
+    code = fidelity.exit_code(results)
+    print({0: "All gates pass", 1: "GATE FAIL", 2: "INCOMPLETE: a required gate could not run"}[code])
+    return code
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="groot-eval", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
     def common(sp: argparse.ArgumentParser, needs_env: bool = True) -> None:
         if needs_env:
-            sp.add_argument("--env", default="reach2d", help="reach2d | isaaclab:<Task> | module:Class")
+            sp.add_argument("--env", default="reach2d", help="reach2d | arm3 | isaaclab:<Task> | module:Class")
             sp.add_argument("--env-arg", action="append", metavar="K=V")
-        sp.add_argument("--policy", required=True, help="pd | pd-avoid | pd-chunk | groot://host:port | module:Class")
+        sp.add_argument("--policy", required=True, help="pd | pd-avoid | pd-chunk | arm-ik | arm-ik-robust | groot://host:port | module:Class")
         sp.add_argument("--policy-arg", action="append", metavar="K=V")
 
     def latency_args(sp: argparse.ArgumentParser) -> None:
@@ -362,6 +539,9 @@ def build_parser() -> argparse.ArgumentParser:
     latency_args(sp)
     sp.add_argument("--export-pairs", metavar="CSV", help="append policy,scenario_id,domain=sim,success rows for `correlate`")
     sp.add_argument("--pairs-policy", metavar="LABEL", help="checkpoint label for --export-pairs (match the real runs)")
+    sp.add_argument("--wear", metavar="YAML", help="run on a worn robot: wear profiles YAML (needs --profile)")
+    sp.add_argument("--profile", help="age profile, e.g. year_1")
+    sp.add_argument("--faults", metavar="YAML", help="inject faults from this catalogue")
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("compare", help="is a candidate checkpoint significantly better or worse?")
@@ -451,6 +631,67 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--domain", choices=["sim", "real"], help="override the trace's domain")
     sp.add_argument("--overwrite", action="store_true")
     sp.set_defaults(func=cmd_pairs)
+
+    def degrade_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--wear", metavar="YAML", help="wear profiles (configs/wear/*.yaml); needs --profile")
+        sp.add_argument("--profile", help="age profile to apply, e.g. year_1")
+        sp.add_argument("--faults", metavar="YAML", help="fault catalogue (configs/faults/*.yaml)")
+
+    sp = sub.add_parser("aging", help="same scenarios on robots of different ages (wear and tear), plus DOF loss")
+    common(sp)
+    sp.add_argument("--config", help="sweep YAML for the base scenarios (default: plain seeds)")
+    sp.add_argument("--episodes", type=int, help="number of base scenarios")
+    sp.add_argument("--wear", required=True, metavar="YAML", help="wear profiles (configs/wear/*.yaml)")
+    sp.add_argument("--profiles", help="comma-separated profiles in age order (default: all)")
+    sp.add_argument("--dof-episodes", type=int, default=0, help="also run the DOF-loss matrix with this many scenarios per cell")
+    sp.add_argument("--margin-gate", type=float, default=0.8, help="success level for the robustness-margin line")
+    sp.add_argument("--min-success-at", nargs=2, metavar=("PROFILE", "RATE"),
+                    help="exit 1 if the success CI lower bound at PROFILE is below RATE")
+    sp.add_argument("--confidence", type=float, default=0.95)
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_aging)
+
+    sp = sub.add_parser("faults", help="inject subsystem faults mid-episode and measure graceful degradation")
+    common(sp)
+    sp.add_argument("--config", help="sweep YAML for the base scenarios (default: plain seeds)")
+    sp.add_argument("--episodes", type=int)
+    degrade_args(sp)
+    sp.add_argument("--min-safe", type=float, help="exit 1 unless the safe-outcome CI lower bound reaches this")
+    sp.add_argument("--max-unsafe", type=float, help="exit 1 unless the unsafe-event CI upper bound stays under this")
+    sp.add_argument("--export-suite", action="store_true", help="save failing fault scenarios as a regression suite")
+    sp.add_argument("--anchors", type=int, default=5)
+    sp.add_argument("--trace", metavar="DIR", help="also write step-level traces (with fault.active columns)")
+    sp.add_argument("--confidence", type=float, default=0.95)
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_faults)
+
+    sp = sub.add_parser("suite", help="skill-focused condition suite: min / nominal / max, one-at-a-time, corners, LHS")
+    common(sp)
+    sp.add_argument("--config", required=True, help="suite YAML (configs/suites/*.yaml)")
+    sp.add_argument("--design", help="override the designs, e.g. oat,corners")
+    sp.add_argument("--repeats", type=int, help="seeds per oat/corner cell")
+    sp.add_argument("--lhs-samples", type=int)
+    degrade_args(sp)
+    sp.add_argument("--min-oat", type=float, help="exit 1 if any one-at-a-time level is significantly below this")
+    sp.add_argument("--min-corner", type=float, help="exit 1 if any corner is significantly below this")
+    sp.add_argument("--trace", metavar="DIR", help="also write traces; scenario names tag each episode's design cell")
+    sp.add_argument("--confidence", type=float, default=0.95)
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_suite)
+
+    sp = sub.add_parser("fidelity", help="data-fidelity gates G0-G6 between a sim and a real trace")
+    sp.add_argument("--sim", help="simulation trace")
+    sp.add_argument("--real", help="real-robot trace")
+    sp.add_argument("--gates", help="thresholds YAML (configs/fidelity/gates.yaml)")
+    sp.add_argument("--direction", choices=["sim2real", "real2sim"], help="which side is being promoted")
+    sp.add_argument("--env", help="env for G3 derived-signal checks and G5 replay (e.g. arm3)")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--param", action="append", metavar="K=V", help="sim parameters for the G5 replay")
+    sp.add_argument("--sysid-config", help="G5: fit sim parameters first (grid sweep YAML), then judge the best fit")
+    sp.add_argument("--pairs", help="G6: pairs CSV of sim and real outcomes")
+    sp.add_argument("--write-manifest", nargs="+", metavar="DIR", help="write SHA-256 manifests for these traces and exit")
+    sp.add_argument("--out")
+    sp.set_defaults(func=cmd_fidelity)
 
     sp = sub.add_parser("plan", help="how many episodes for a given confidence interval width")
     sp.add_argument("--margin", type=float, default=0.05)

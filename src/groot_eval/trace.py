@@ -150,8 +150,12 @@ class TraceRecorder:
         timestamp: float | None = None,
         chunk_index: int = -1,
         chunk_step: int = -1,
+        extra: dict[str, float] | None = None,
     ) -> None:
         """Record the observation the policy saw and the action it returned.
+
+        ``extra`` adds scalar columns for this step (for example ``fault.active``
+        from :class:`~groot_eval.degradation.faults.FaultEnv`).
 
         ``wall_time`` is any monotonic clock reading (``time.perf_counter()``);
         it is stored relative to the episode's first step.
@@ -193,6 +197,8 @@ class TraceRecorder:
             "chunk_step": float(chunk_step),
             "reward": float(reward),
         }
+        for k, v in (extra or {}).items():
+            row[str(k)] = float(v)
         for key in self.video_keys:
             if key in obs:
                 for stat, value in image_stats(obs[key]).items():

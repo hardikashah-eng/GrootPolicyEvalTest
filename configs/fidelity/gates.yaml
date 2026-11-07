@@ -1,0 +1,40 @@
+# Data-fidelity gate thresholds. Starting points: tune them on your own robot's data.
+direction: sim2real          # the side being promoted; its problems fail gates, the other side's only warn
+gates:
+  G0_integrity:
+    required: true
+    provenance: [env, policy]  # keys expected in trace_info.json / info.json (add robot_id, calibration_id, firmware)
+    provenance_required: false
+  G1_contract:
+    required: true
+  G2_timing:
+    required: true
+    max_jitter_p99_frac: 0.25  # p99 |period - dt| as a fraction of dt
+    max_drop_frac: 0.005       # steps more than 1.5 dt apart
+    max_sync_offset_frac: 0.5  # camera_time.<cam> vs timestamp, in steps
+  G3_plausibility:
+    required: true
+    max_velocity_nrmse: 0.5    # finite-difference position vs reported velocity
+    velocity_pairs: auto       # or {joint_pos: joint_vel}
+    limits: {}                 # e.g. {joint_pos: [[-0.2, 3.34], [-2.6, 2.6], [-2.6, 2.6]]}
+    action_range: [-1, 1]
+    teleport_factor: 4.0
+    max_teleport_frac: 0.001
+    max_derived_error: 0.01    # with --env: recorded ee pose vs the env's forward kinematics
+    label_check: true
+  G4_distribution:
+    required: true
+    max_state_w1: 0.3          # Wasserstein distance in pooled standard deviations
+    max_action_w1: 0.5
+    max_image_w1: 0.5
+    min_coverage: 0.95         # share of real states inside the sim's 0.5-99.5% envelope (+5% margin)
+    envelope_margin: 0.05
+  G5_dynamics:
+    required: false            # set true once the sim has set_state() and a real trace exists
+    horizon: 10
+    max_nrmse: 0.1
+    episodes: 20
+  G6_outcome:
+    required: false
+    min_agreement: 0.85
+    min_spearman: 0.8

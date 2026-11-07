@@ -118,3 +118,19 @@ def required_trials(margin: float, confidence: float = 0.95, p: float = 0.5) -> 
         raise ValueError("margin must be in (0, 1)")
     z = z_for(confidence)
     return math.ceil(z * z * p * (1 - p) / (margin * margin))
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """Two-sided exact McNemar p-value for paired binary outcomes.
+
+    ``b`` = pairs where only the first condition succeeded, ``c`` = only the
+    second. Pairs that agree carry no information. Running the same scenarios
+    under two conditions (a new and a 1-year-old robot) and testing the
+    discordant pairs detects smaller differences than two independent sweeps.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return float(min(1.0, 2 * tail))

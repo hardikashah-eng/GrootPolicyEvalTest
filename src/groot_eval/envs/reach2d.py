@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
 
 class Reach2DEnv:
     dt = 0.05
+    action_dim = 2
 
     def __init__(self, max_steps: int = 200) -> None:
         self.max_steps = max_steps

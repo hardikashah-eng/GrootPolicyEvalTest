@@ -1,0 +1,17 @@
+# One fault per episode, starting while the arm is still moving (Arm3 reaches its
+# target in ~60 steps): the per-fault-type table.
+faults:
+  mode: single
+  start_window: [5, 40]
+  catalogue:
+    - {type: stuck,         targets: ["encoder[*]"], duration: [20, 80]}
+    - {type: dropout,       targets: ["encoder[*]"], duration: [3, 20]}
+    - {type: bias_step,     targets: ["encoder[*]"], duration: [40, 120], severity: [0.1, 0.4]}
+    - {type: noise_burst,   targets: ["encoder[*]"], duration: [20, 60],  severity: [0.02, 0.1]}
+    - {type: motor_off,     targets: ["motor[*]"],   duration: permanent}
+    - {type: motor_runaway, targets: ["motor[*]"],   duration: [3, 10], severity: 1.0}
+    - {type: joint_lock,    targets: ["joint[*]"],   duration: [40, 200]}
+    - {type: gripper_fail,  targets: [gripper],      duration: [40, 120], severity: 0.0}
+    - {type: comm_stall,    targets: [bus],          duration: [3, 15]}
+    - {type: latency_spike, targets: [bus],          duration: [20, 60],  severity: [2, 6]}
+    - {type: power_sag,     targets: [bus],          duration: [20, 100], severity: [0.3, 0.6]}

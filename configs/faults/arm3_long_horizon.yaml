@@ -1,0 +1,21 @@
+# Long-horizon multi-fault runs on Arm3: subsystems fail at random times
+# (Poisson arrivals), at most two at once. Targets are component globs.
+# Pair with a long task: `--env arm3 --env-arg max_steps=900` and a base config with
+# `waypoints: 8` (configs/arm3_long.yaml), about 500 steps per episode.
+faults:
+  mode: random
+  rate_per_min: 20       # ~10 s episodes (500 steps x 0.02 s): about 3 faults each
+  max_concurrent: 2
+  max_faults: 4
+  earliest_step: 5
+  catalogue:
+    - {type: stuck,         targets: ["encoder[*]"], duration: [10, 80]}
+    - {type: dropout,       targets: ["encoder[*]"], duration: [3, 20]}
+    - {type: bias_step,     targets: ["encoder[*]"], duration: [20, 120], severity: [0.1, 0.4]}
+    - {type: noise_burst,   targets: ["encoder[*]"], duration: [10, 60],  severity: [0.02, 0.1]}
+    - {type: motor_off,     targets: ["motor[*]"],   duration: permanent, weight: 0.5}
+    - {type: joint_lock,    targets: ["joint[*]"],   duration: [30, 200], weight: 0.5}
+    - {type: gripper_fail,  targets: [gripper],      duration: [20, 120], severity: 0.0, weight: 0.5}
+    - {type: comm_stall,    targets: [bus],          duration: [3, 15]}
+    - {type: latency_spike, targets: [bus],          duration: [10, 60],  severity: [2, 6]}
+    - {type: power_sag,     targets: [bus],          duration: [20, 100], severity: [0.3, 0.6]}

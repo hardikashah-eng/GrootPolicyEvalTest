@@ -1,0 +1,10 @@
+# Arm3 thresholds: the generic gates plus the arm's joint limits.
+direction: sim2real
+gates:
+  G3_plausibility:
+    limits: {joint_pos: [[-0.2, 3.3416], [-2.6, 2.6], [-2.6, 2.6]]}
+    action_range: [-1, 1]
+  G4_distribution:
+    max_state_w1: 0.3
+  G5_dynamics:
+    required: true
