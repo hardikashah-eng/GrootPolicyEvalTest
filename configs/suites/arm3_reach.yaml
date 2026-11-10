@@ -1,0 +1,16 @@
+# Reach-and-grasp skill on the Arm3 CPU simulator: runs anywhere, used in tests and the demo.
+skill: reach_grasp
+task: "reach the target and close the gripper"
+design: [oat, corners, lhs]
+repeats: 12
+lhs_samples: 200
+seed: 5
+corner_conditions: [target_radius, payload_kg, friction, action_delay]
+conditions:
+  target_radius: {min: 0.35, nominal: 0.6, max: 0.82}          # m from the base; 0.82 is near full reach
+  target_angle:  {min: 0.3,  nominal: 1.57, max: 2.85}         # rad; the edges of the workspace
+  payload_kg:    {min: 0.0,  nominal: 0.1, max: 0.6}           # gravity compensation assumes 0
+  friction:      {min: 0.6,  nominal: 1.0, max: 2.5}
+  action_delay:  {min: 0,    nominal: 0,   max: 2, integer: true}
+  sensor_noise:  {min: 0.0,  nominal: 0.0, max: 0.01}          # rad
+metrics: [final_distance, path_length, torque_saturation_steps]

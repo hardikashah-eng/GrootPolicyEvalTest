@@ -1,0 +1,9 @@
+# Arm3 reach-and-grasp sweep (the base scenarios for `aging` and single-fault runs).
+seed: 3
+episodes: 300
+task: "reach the target and close the gripper"
+params:
+  payload_kg:   {uniform: [0.0, 0.4]}
+  friction:     {uniform: [0.7, 1.6]}
+  sensor_noise: {uniform: [0.0, 0.005]}
+  action_delay: {choice: [0, 1], weights: [0.8, 0.2]}

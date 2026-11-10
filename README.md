@@ -11,7 +11,11 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 * **Open-loop evaluation** scores predicted action chunks against recorded demonstrations in **LeRobot v2 format** (the format GR00T fine-tuning uses), including how error grows along the action chunk.
 * **Sim-to-real correlation** checks whether simulation ranks checkpoints the same way the real robot does, and which scenarios disagree most.
 * **Sim-to-real gap debugging** logs sim and real runs step by step in one format, checks the two sides agree on units, ranges, rates and key order, ranks every signal by how far sim and real drift apart, and replays real actions in sim to find the physics parameters that reproduce the robot (see [below](#debugging-the-sim-to-real-gap)).
-* **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus a built-in CPU simulator so the whole workflow runs on a laptop.
+* **Wear and tear by age:** the same scenarios on a brand-new, 1-week, 1-year-old robot (motor gain and torque loss, joint friction, backlash, stiction, encoder bias and noise, camera blur, bus latency), compared pair by pair, plus a **degree-of-freedom loss** matrix (each joint locked, limp or range-limited). See [below](#robustness-wear-faults-skill-suites-and-data-fidelity-gates).
+* **Fault injection:** sensors, motors, joints, gripper and comm bus fail mid-episode, one at a time or several at random over long tasks. Reports say whether the robot finished, stopped safely or did something unsafe, and how fast it reacted.
+* **Skill-focused suites:** one skill, its conditions at min / nominal / max, run one at a time, at every corner and as a Latin hypercube, so interactions show up that random sweeps miss.
+* **Data-fidelity gates (G0–G6):** integrity, contract, timing, physical plausibility, distribution and coverage, dynamics replay and outcome agreement, in order, with thresholds in YAML and CI exit codes, for data moving sim to real or real to sim.
+* **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus built-in CPU simulators (a point mass and a 3-joint arm with a gripper) so the whole workflow runs on a laptop.
 
 ## Quick start
 
@@ -19,7 +23,8 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
 uv run python examples/run_sim2real_demo.py   # the sim-to-real loop against a synthetic robot, ~15 s
-uv run pytest                           # 83 tests
+uv run python examples/run_robustness_demo.py # aging, DOF loss, faults, skill suite, fidelity gates, ~2 min
+uv run pytest                           # 102 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -71,9 +76,14 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval gap SIM REAL --out DIR` | Sim-to-real gap report: signals ranked by distance, timing and latency, action-chunk boundaries, outcomes. `--plots` adds histograms (needs matplotlib). |
 | `groot-eval replay TRACE --out DIR` | Put the sim in each recorded episode's first state, play the recorded actions open loop, and report per-signal tracking error. `--config` ranks every candidate parameter setting by fit (system identification); `--reset-every N` re-syncs every N steps. |
 | `groot-eval make-demo-data` | Record a small LeRobot-format dataset from the built-in simulator. |
+| `groot-eval aging --wear W.yaml` | Same scenarios at every age profile; paired McNemar test against the new robot, robustness margin, which wear drives failure, `--dof-episodes N` adds the DOF-loss matrix. `--min-success-at year_1 0.8` gates. |
+| `groot-eval faults --faults F.yaml` | Fault campaign: success, safe outcome, unsafe events, controlled stops, reaction and recovery, by fault type, component and number of concurrent faults. `--min-safe` / `--max-unsafe` gate. Combine with `--wear --profile`. |
+| `groot-eval suite --config S.yaml` | Skill suite: one-at-a-time, corners and LHS over min / nominal / max conditions. `--min-oat` / `--min-corner` fail on cells significantly below the bar. Combine with `--wear`, `--faults`. |
+| `groot-eval fidelity --sim S --real R` | Data-fidelity gates G0–G6 (`--gates` YAML, `--direction sim2real\|real2sim`, `--env` for replay, `--pairs` for outcomes). Exit 0 pass, 1 fail, 2 a required gate could not run. `--write-manifest DIR` records SHA-256 hashes. |
+| `groot-eval sweep ... --wear W --profile P` / `--faults F` | Any sweep on a worn robot or with faults. |
 | `groot-eval plan --margin 0.05` | Episodes needed for a given confidence-interval width. |
 
-Policies: `pd`, `pd-avoid`, `pd-chunk`, `groot://host:port`, or `package.module:Class`. Environments: `reach2d`, `isaaclab:<TaskId>`, or `package.module:Class`. Constructor options go through `--policy-arg key=value` and `--env-arg key=value`.
+Policies: `pd`, `pd-avoid`, `pd-chunk`, `arm-ik`, `arm-ik-robust`, `groot://host:port`, or `package.module:Class`. Environments: `reach2d`, `arm3`, `isaaclab:<TaskId>`, or `package.module:Class`. Constructor options go through `--policy-arg key=value` and `--env-arg key=value`.
 
 ## Randomization config
 
@@ -166,6 +176,53 @@ In a CPU check, the stand-in "real" ran `pd-chunk` with about 110 ms of inferenc
 
 A test runs the demo and fails if the fit stops recovering the hidden values. Everything on the "robot" side is simulated, so this shows the tools work together and find known causes, not that they will on a particular robot.
 
+## Robustness: wear, faults, skill suites and data-fidelity gates
+
+Everything here is a wrapper or a scenario generator, so sweeps, intervals, failure attribution, regression suites and traces work on it unchanged. Wear values and fault schedules are **scenario parameters** (`wear.joint[1].backlash_rad`, `faults: "stuck@encoder[1]:40+60"`), so every degraded episode has an id, is replayed exactly by `regress`, and is ranked by attribution like friction or latency. The CPU examples use **Arm3** (`--env arm3`): a planar 3-joint arm with a gripper, gravity, per-joint motors, gearboxes and encoders. The wear numbers in `configs/wear/` are **placeholders**: calibrate them from durability rigs or fleet logs (`replay --config` fits gain and friction from an old robot's trace). Sample reports from `examples/run_robustness_demo.py` are under [`docs/sample-reports/robustness/`](docs/sample-reports/robustness/) ([summary](docs/sample-reports/robustness/SUMMARY_SYNTHETIC.md)).
+
+**Components.** An env can list what can degrade with `components()` (name, kind, which action indices and state slices it owns) and change its own physics with `set_component_param(name, key, value)`. Arm3 does both; on Isaac Lab, map the same keys to actuator `stiffness`, `damping`, `effort_limit`, `friction` and joint limits through `param_setters`. Envs without these hooks still get the boundary effects: commands are scaled, clipped, zeroed or delayed, and observations are biased, noised, quantized, frozen or dropped. Effects that need physics and have no lever are listed as not applied, not silently skipped.
+
+**1. Wear and tear by age** ([report](docs/sample-reports/robustness/aging.md)). A profile file maps age in hours to each effect (`linear`, `sqrt`, `bathtub`), with a per-unit log-normal spread and per-joint load factors. Each scenario's seed is its unit, so the same unit is compared at every age and the McNemar test on discordant pairs detects smaller drops than two independent sweeps would.
+
+```bash
+groot-eval aging --env arm3 --policy arm-ik --config configs/arm3_reach.yaml --episodes 200 \
+  --wear configs/wear/arm3_profiles.yaml --dof-episodes 40 --min-success-at year_1 0.9 --out runs/aging
+```
+
+On the placeholder profiles: 100% through year 1, 97.5% at year 2, 87.0% at year 3 (26 scenarios lost, p = 3e-8), 78.5% at end of life. The robustness margin at 90% falls between year 2 and year 3. Joint 1 friction is the only significant driver at end of life. The DOF-loss matrix shows a limp shoulder is fatal (0%) while a locked one still allows 47.5% of reaches.
+
+**2. Fault injection** ([robust](docs/sample-reports/robustness/faults_single_robust.md), [naive](docs/sample-reports/robustness/faults_single_naive.md), [long horizon](docs/sample-reports/robustness/faults_long_horizon.md)). Twelve fault types (`stuck`, `dropout`, `bias_step`, `noise_burst`, `blackout`, `motor_off`, `motor_runaway`, `joint_lock`, `gripper_fail`, `comm_stall`, `latency_spike`, `power_sag`) on component globs, one per episode (`mode: single` with a start window) or Poisson arrivals with a concurrency cap (`mode: random`). *Safe outcome* = success or a controlled stop, with no collision, instability or joint-limit hit after the fault. Safety gates must be *shown* to hold (CI lower bound of safe outcomes at or above `--min-safe`), so too few episodes fails the gate.
+
+```bash
+groot-eval faults --env arm3 --policy arm-ik-robust --episodes 300 --faults configs/faults/arm3_single.yaml --min-safe 0.9 --out runs/faults
+groot-eval faults --env arm3 --env-arg max_steps=900 --policy arm-ik-robust --config configs/arm3_long.yaml \
+  --faults configs/faults/arm3_long_horizon.yaml --wear configs/wear/arm3_profiles.yaml --profile year_1 --out runs/faults_long
+```
+
+With single faults, the naive controller reaches a safe outcome in 77.8% of episodes and sends NaN commands 27 times when a reading drops out. The robust one (holds the last valid reading, flags a frozen or stalled joint, routes motion through the others, re-trusts the joint after a while) reaches 86.5% with no NaN commands. That still fails a 90% gate, and `motor_off` is why: a limp joint falls onto its limit. In the long task, success is 100% with one fault, 84% with two and 54% with three: the cliff is at the third concurrent fault.
+
+**3. Skill suites** ([report](docs/sample-reports/robustness/suite_reach.md)). Conditions with `min`, `nominal`, `max`; designs `oat` (one at a time), `corners` (2^k, limit with `corner_conditions`) and `lhs` (stratified). Scenario names record the design cell, so `--trace` doubles as a per-skill, per-condition dataset. `configs/suites/` has a runnable Arm3 reach-and-grasp suite and Isaac Lab templates for walking and grasping.
+
+```bash
+groot-eval suite --env arm3 --policy arm-ik --config configs/suites/arm3_reach.yaml --min-corner 0.5 --out runs/suite
+```
+
+No single condition is significant one at a time (the worst level, two steps of delay, is 83.3% on 12 episodes), but the corners find `friction=min` with `action_delay=max` at 40% and one corner significantly below 50%. A random sweep would have averaged that away.
+
+**4. Data-fidelity gates** ([units bug](docs/sample-reports/robustness/fidelity_units_bug_SYNTHETIC.md), [worn robot](docs/sample-reports/robustness/fidelity_worn_robot_SYNTHETIC.md), [after sysid](docs/sample-reports/robustness/fidelity_after_sysid_SYNTHETIC.md)).
+
+| Gate | Checks |
+|---|---|
+| G0 integrity | columns, lengths, NaN/Inf, increasing timestamps, SHA-256 manifest (`--write-manifest`), provenance keys |
+| G1 contract | the `check` command: keys, dims, units, scale, gripper range, action order, image range, control rate |
+| G2 timing | period jitter, dropped steps, `camera_time.<cam>` sync offset |
+| G3 plausibility | finite-difference vs reported velocity, position and action limits, teleports, derived signals vs the env's kinematics (`--env`), success labels vs final reward |
+| G4 distribution | per-signal Wasserstein distance (state, action, image), coverage of real states by the sim's envelope |
+| G5 dynamics | real actions replayed in sim, error at 10 steps, optionally after `--sysid-config` |
+| G6 outcome | `correlate` agreement and checkpoint ranking (`--pairs`) |
+
+G0 and G1 are prerequisites: if either fails, the rest are skipped. `--direction` names the side being promoted; problems on the other side only warn. In the demo, a "robot" trace logging joint velocity in deg/s stops at G1. Once fixed, a 3-year-old unit fails G3 (encoder bias puts reported angles past the joint limits), G4 (coverage 92%) and G5 (replay error 1.30). Fitting the sim's global friction brings G5 to 0.49 with the fit pinned at the edge of its range, which G5 flags: per-joint wear is what's missing. A trace compared with itself passes every gate, with a replay error of 0.000. G5 needs the same physics on both sides, so record it with fixed parameters or fit them with `--sysid-config`.
+
 ## Status and limits
 
 * **Tested here:** everything that runs on a CPU, including statistics, sweeps, attribution, comparison, regression suites, the LeRobot reader and writer, open-loop scoring, correlation, the CLI, and the GR00T adapter against a fake client.
@@ -173,6 +230,7 @@ A test runs the demo and fails if the fit stops recovering the hidden values. Ev
 * The Isaac Lab adapter runs one environment at a time. Batching episodes across Isaac Lab's parallel environments is the obvious next step for throughput.
 * Video decoding for open-loop uses OpenCV seeks, which is simple but slow on long episodes.
 * The sim-to-real example data is **synthetic**. It shows the input format and the analysis, not a real result.
+* Wear profiles and fault rates are **placeholders**; Arm3 is a teaching model, not an arm. Condition coverage of real datasets per suite cell is not implemented yet; G4 coverage works on state space instead.
 
 ## Layout
 
@@ -191,8 +249,11 @@ src/groot_eval/
   replay.py          open-loop replay of recorded actions, system-identification ranking
   latency.py         inference-latency model for sim rollouts (hold / continue during inference)
   report.py          Markdown reports
-  envs/              Reach2D simulator, Isaac Lab adapter
-  policies/          reference controllers, action chunking, GR00T server adapter
+  degradation/       wear profiles + WearEnv, fault schedules + FaultEnv, aging / DOF-loss / fault runners and reports
+  suites.py          skill suites: min / nominal / max conditions, one-at-a-time, corners, LHS
+  fidelity.py        data-fidelity gates G0-G6, SHA-256 manifests
+  envs/              Reach2D and Arm3 simulators, Isaac Lab adapter
+  policies/          reference controllers (incl. naive and fault-tolerant arm IK), action chunking, GR00T server adapter
 ```
 
 ## License

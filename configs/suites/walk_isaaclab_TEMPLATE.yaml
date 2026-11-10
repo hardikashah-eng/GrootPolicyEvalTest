@@ -1,0 +1,21 @@
+# TEMPLATE for a humanoid walking suite on Isaac Lab. Not runnable as is:
+# map each condition to your task through IsaacLabEnv(param_setters={...})
+# (e.g. speed_mps -> the velocity command, surface_curvature -> terrain generator,
+# lighting_lux -> dome light intensity), and replace the env spec.
+#   groot-eval suite --config configs/suites/walk_isaaclab_TEMPLATE.yaml \
+#     --env isaaclab:<YourWalkTask> --env-arg ... --policy groot://localhost:5555 --out runs/suite_walk
+skill: walk
+task: "walk to the marker"
+design: [oat, corners, lhs]
+repeats: 10
+lhs_samples: 200
+corner_conditions: [speed_mps, surface_curvature, slope_deg, ground_friction]
+conditions:
+  speed_mps:         {min: 0.2, nominal: 0.6,  max: 1.2}
+  surface_curvature: {min: 0.0, nominal: 0.05, max: 0.3}     # 1/m
+  slope_deg:         {min: -10, nominal: 0,    max: 10}
+  ground_friction:   {min: 0.3, nominal: 0.8,  max: 1.2}
+  step_height_m:     {min: 0.0, nominal: 0.0,  max: 0.08}
+  payload_kg:        {min: 0,   nominal: 0,    max: 5}
+  lighting_lux:      {min: 50,  nominal: 500,  max: 5000}
+metrics: [time_to_goal, cost_of_transport, foot_slip, torso_tilt_max, falls]

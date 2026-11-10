@@ -1,0 +1,8 @@
+# Long-horizon Arm3 task: visit 8 targets in order, then close the gripper (~500 steps).
+seed: 11
+episodes: 200
+task: "visit every waypoint, then grasp"
+params:
+  waypoints: {fixed: 8}
+  payload_kg: {uniform: [0.0, 0.3]}
+  friction: {uniform: [0.8, 1.5]}

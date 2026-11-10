@@ -53,7 +53,8 @@ def _run_episode(env: Env, policy: Policy, scenario: Scenario, recorder: TraceRe
         if recorder is not None:
             recorder.record_step(seen, action, latency_ms=latencies[-1], reward=float(reward), wall_time=t0,
                                  chunk_index=getattr(policy, "last_chunk_index", -1),
-                                 chunk_step=getattr(policy, "last_chunk_step", -1))
+                                 chunk_step=getattr(policy, "last_chunk_step", -1),
+                                 extra=info.get("step_columns"))
         if terminated or truncated:
             break
     else:
