@@ -1,0 +1,27 @@
+# Arm3 age profiles with every wear effect, including thermal derating, sensor gain error,
+# IMU-style bias random walk and camera mount drift. Effect sizes are PLACEHOLDERS:
+# calibrate them with `groot-eval wear-fit` on real traces and with durability-rig data.
+duty_hours_per_day: 8
+eol_hours: 10000
+profiles:
+  new:         {age_hours: 0}
+  week_1:      {age_days: 7}
+  month_6:     {age_days: 182}
+  year_1:      {age_days: 365}
+  year_2:      {age_days: 730}
+  year_3:      {age_days: 1095}
+  end_of_life: {age_hours: 10000}
+effects:
+  motor.gain_scale:         {curve: linear,  start: 1.0, at_eol: 0.80, spread: 0.3}
+  motor.torque_limit_scale: {curve: linear,  start: 1.0, at_eol: 0.75, spread: 0.3}
+  motor.thermal_derate:     {curve: sqrt,    start: 0.0, at_eol: 0.30, spread: 0.3}   # torque lost when hot
+  motor.thermal_tau_s:      {curve: linear,  start: 4.0, at_eol: 2.0}                 # heats faster when old
+  joint.friction_scale:     {curve: bathtub, start: 1.0, at_eol: 3.0,  spread: 0.4}
+  joint.backlash_rad:       {curve: bathtub, start: 0.0, at_eol: 0.03, spread: 0.5}
+  joint.stiction:           {curve: linear,  start: 0.0, at_eol: 0.08, spread: 0.5}
+  encoder.bias_rad:         {curve: linear,  start: 0.0, at_eol: 0.03, spread: 0.5, signed: true}
+  encoder.scale:            {curve: linear,  start: 1.0, at_eol: 0.99, spread: 0.5}
+  encoder.bias_walk:        {curve: linear,  start: 0.0, at_eol: 0.002}
+  encoder.noise:            {curve: linear,  start: 0.0, at_eol: 0.004}
+  gripper.close_rate_scale: {curve: linear,  start: 1.0, at_eol: 0.5,  spread: 0.2}
+load_factor: {"joint[0]": 1.5, "motor[0]": 1.5, "joint[1]": 1.2, "motor[1]": 1.2, default: 1.0}

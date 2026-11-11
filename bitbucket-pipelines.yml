@@ -1,0 +1,31 @@
+# Policy check on every pull request and every push to Main (stdlib only, well under a minute).
+# The full test suite is a manual pipeline so it does not use build minutes on every push:
+# run it from Pipelines > Run pipeline > custom: tests.
+image: python:3.12
+
+definitions:
+  steps:
+    - step: &policy
+        name: Repository policy check
+        max-time: 5
+        script:
+          - python tools/policy_check.py
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *policy
+  branches:
+    Main:
+      - step: *policy
+  custom:
+    tests:
+      - step: *policy
+      - step:
+          name: Tests
+          max-time: 30
+          caches:
+            - pip
+          script:
+            - pip install -e . pytest
+            - pytest -q

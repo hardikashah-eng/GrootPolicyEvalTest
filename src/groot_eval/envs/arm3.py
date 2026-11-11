@@ -115,6 +115,10 @@ class Arm3Env:
         out["bus"] = ComponentSpec("bus", "bus", action=tuple(range(self.action_dim)))
         return out
 
+    def state_limits(self) -> dict[str, list]:
+        """Ranges the sim can represent, per ``state.*`` key (``groot-eval transfer`` checks real data against them)."""
+        return {"joint_pos": self.limits.tolist(), "gripper": [[0.0, 1.0]]}
+
     @property
     def action_dim(self) -> int:
         return self.n + (1 if self.gripper else 0)

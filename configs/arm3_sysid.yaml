@@ -1,0 +1,7 @@
+# Candidate physics for system identification on Arm3 (`groot-robot calibrate --sysid`, `groot-eval replay --config`).
+# Every grid cell replays the robot's recorded actions; the cell that tracks best becomes the profile's sim params.
+mode: grid
+grid_points: 5
+params:
+  friction:     {uniform: [0.6, 1.8]}
+  action_delay: {choice: [0, 1, 2]}

@@ -2,6 +2,8 @@
 
 * ``reach2d`` - the built-in CPU simulator.
 * ``arm3`` - a planar N-joint arm with a gripper (wear, faults and DOF loss).
+* ``walker`` - a reduced-order humanoid walking overground; ``treadmill`` - the same walker on a
+  split-belt treadmill (perturbations, recentering, recorded-belt replay).
 * ``isaaclab:<TaskId>`` - an Isaac Lab Gymnasium task (needs Isaac Sim / Isaac Lab).
 * ``package.module:ClassName`` - any class implementing :class:`groot_eval.envs.base.Env`.
 """
@@ -23,6 +25,14 @@ def make_env(spec: str, **kwargs: Any) -> Env:
         from groot_eval.envs.arm3 import Arm3Env
 
         return Arm3Env(**kwargs)
+    if spec == "walker":
+        from groot_eval.envs.walker import Walker
+
+        return Walker(**kwargs)
+    if spec == "treadmill":
+        from groot_eval.envs.treadmill import TreadmillEnv
+
+        return TreadmillEnv(**kwargs)
     if spec.startswith("isaaclab:"):
         from groot_eval.envs.isaaclab_env import IsaacLabEnv
 

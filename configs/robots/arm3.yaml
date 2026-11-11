@@ -1,0 +1,14 @@
+# Robot profile: what the hardware accepts. `groot-eval transfer --robot` checks sim data against it (sim2real)
+# and real data for out-of-range readings (real2sim). Values here describe the Arm3 CPU model, a stand-in:
+# replace them with your robot's datasheet and controller limits.
+name: arm3
+embodiment: arm3
+control_hz: 50
+state_limits:
+  joint_pos: [[-0.2, 3.3416], [-2.6, 2.6], [-2.6, 2.6]]   # rad, from the joint end stops
+  joint_vel: [[-25.0, 25.0], [-25.0, 25.0], [-25.0, 25.0]] # rad/s, controller trips above this
+  gripper: [[0.0, 1.0]]
+action_range: [-1.0, 1.0]       # normalized torque per joint, then the gripper command
+max_action_rate: 2.0            # largest command change per control step the drivers pass through
+# camera: {wrist: {height: 32, width: 32}}   # enable for traces with video.wrist
+# age_hours: 2920                            # deployed unit's operating hours, if trace_info lacks robot_age_hours

@@ -1,0 +1,35 @@
+# HDF5 (Isaac Lab Mimic / robomimic layout) -> LeRobot v2 conversion check:
+#   groot-twin convert-check --hdf5 demos.hdf5 --lerobot my_lerobot_ds --config this.yaml --out runs/conv
+# Without `state`/`action`/`video` the mapping is inferred from meta/modality.json names.
+mapping:
+  episodes: data/demo_*          # episode groups, natural sort order
+  fps: 30                        # control rate of the HDF5 data if the file does not record it
+  task_attr: task                # per-episode attribute holding the language instruction (optional)
+  success_attr: success
+  state:                         # concatenated in this order into observation.state
+    - {key: obs/joint_pos, modality: left_arm}
+    - {key: obs/hand_joint_state, modality: left_hand}
+  action:
+    - {key: actions, modality: left_arm}
+  video:                         # LeRobot video key -> HDF5 image dataset (T, H, W, 3)
+    ego_view: obs/robot_pov_cam
+  scalars: {}                    # extra parquet column -> HDF5 key
+  ignore:                        # converted on purpose: not reported as lost
+    - "states/*"
+    - "initial_state/*"
+    - obs/datagen_info/*
+gates:                           # thresholds: starting points, tune on your data
+  C0_inventory: {lost_is_error: false}
+  C1_timing: {max_fps_rel_error: 0.01, max_period_jitter_frac: 0.1}
+  C2_actuator: {max_rel_error: 1.0e-4, min_snr_db: 60}
+  C3_visual: {min_psnr_mean: 35, min_psnr_p5: 30, min_ssim_mean: 0.95, min_sharpness_ratio: 0.8,
+              max_color_shift: 3, max_frozen_frac: 0.01, sample_every: 1, max_frames_per_episode: 300}
+  C4_metadata: {}
+# Round trip and sim replay (groot-twin convert-sidecar | roundtrip | replay-check). convert-check ignores this
+# section. `sidecar` lists the sim-only prefixes kept next to the LeRobot data so the HDF5 can be rebuilt and
+# replayed; they can stay under `ignore` above, since LeRobot itself does not carry them.
+roundtrip:
+  sidecar: ["initial_state", "states"]
+  gates:
+    C5_roundtrip: {max_rel_error: 1.0e-4, min_psnr_mean: 35, min_psnr_p5: 30, lost_is_error: false}
+    C6_replay: {joint_abs: 1.0e-3, floor_multiplier: 3, source_joint_abs: 1.0e-2, min_psnr_mean: 30, min_psnr_p5: 25}

@@ -33,6 +33,10 @@ command or observation boundary):
 =====================================  ==========================================
 ``motor.gain_scale``                   physics, else action x scale
 ``motor.torque_limit_scale``           physics, else action clipped
+``motor.thermal_derate`` / ``thermal_tau_s``  command boundary, stateful: the motor heats with load
+                                       (first-order, time constant ``thermal_tau_s``) and loses up to
+                                       ``thermal_derate`` of its torque limit when hot, so long episodes
+                                       get weaker towards the end
 ``joint.friction_scale`` / ``damping_scale`` / ``backlash_rad`` / ``range_scale``   physics only
 ``joint.stiction``                     physics, else a command dead zone
 ``joint.dof_mode``                     physics (lock / limp motor / 30% range), else command zeroed
@@ -41,7 +45,11 @@ command or observation boundary):
 ``encoder|sensor.noise``               observation: Gaussian noise
 ``encoder|sensor.quant``               observation: quantization step (first key)
 ``encoder|sensor.dropout_p``           observation: NaN with this probability per step
-``camera.blur_px`` / ``exposure`` / ``dead_px_frac``   observation: image effects
+``encoder|sensor.scale``               observation: gain error, reading x scale (first key)
+``encoder|sensor.bias_walk``           observation: bias random walk, std per sqrt(second) (IMU-style drift)
+``encoder|sensor.saturation``          observation: reading clipped to +-saturation (F/T sensors)
+``camera.blur_px`` / ``exposure`` / ``dead_px_frac`` / ``shift_px``   observation: image effects
+                                       (``shift_px``: extrinsic drift as a horizontal image shift)
 ``bus.latency_steps`` / ``bus.drop_p``  command delayed / previous command repeated
 =====================================  ==========================================
 
@@ -69,6 +77,7 @@ from groot_eval.types import Scenario
 
 PREFIX = "wear"
 DOF_MODES = ("locked", "limp", "limited")
+SENSOR_KEYS = ("bias_rad", "noise", "quant", "dropout_p", "scale", "bias_walk", "saturation")
 CURVES = ("linear", "bathtub", "sqrt", "step")
 
 
@@ -162,6 +171,17 @@ class WearConfig:
                 out[f"{PREFIX}.{name}.{eff.key}"] = eff.value(age, self.eol_hours, load, factor, sign)
         return out
 
+    def typical_unit(self, age_hours: float, components: dict[str, ComponentSpec]) -> dict[str, Any]:
+        """The median unit at ``age_hours``: no unit-to-unit spread, and signed effects (biases) at zero,
+        since their sign is unknown. What a fleet-average robot of that age looks like."""
+        out: dict[str, Any] = {f"{PREFIX}.age_hours": float(age_hours)}
+        for eff in self.effects:
+            for name in sorted(n for n, c in components.items() if c.kind == eff.kind):
+                load = self.load_factor.get(name, self.load_factor.get("default", 1.0))
+                v = eff.value(age_hours, self.eol_hours, load, 1.0, 0.0 if eff.signed else 1.0)
+                out[f"{PREFIX}.{name}.{eff.key}"] = v
+        return out
+
 
 def _unit_seed(seed: int, name: str, key: str) -> int:
     return (int(seed) * 1_000_003 + zlib.crc32(f"{name}|{key}".encode())) % (2**32)
@@ -207,6 +227,9 @@ class WearEnv(EnvWrapper):
         self._queue: deque[np.ndarray] = deque()
         self._last_sent: np.ndarray | None = None
         self._rng = np.random.default_rng(0)
+        self._thermal: dict[int, tuple[float, float]] = {}  # action index -> (derate, tau_s)
+        self._heat: dict[int, float] = {}
+        self._walk: dict[tuple[str, str], np.ndarray] = {}
 
     def reset(self, scenario: Scenario) -> Obs:
         mine, rest = split_params(scenario.params, PREFIX)
@@ -226,9 +249,11 @@ class WearEnv(EnvWrapper):
         return self._observe(obs)
 
     def _apply(self, spec: ComponentSpec, fx: dict[str, Any]) -> None:
-        obs_fx, cam_fx = {}, {}
+        obs_fx, cam_fx, thermal = {}, {}, {}
         for key, value in fx.items():
-            if key == "dof_mode":
+            if key in ("thermal_derate", "thermal_tau_s") and spec.action:
+                thermal[key] = float(value)
+            elif key == "dof_mode":
                 self._dof(spec, str(value))
             elif spec.kind == "bus":
                 if key == "latency_steps":
@@ -237,9 +262,9 @@ class WearEnv(EnvWrapper):
                     self._drop_p = float(value)
                 else:
                     self.unsupported.add(f"{spec.name}.{key}")
-            elif spec.kind in ("encoder", "sensor") and key in ("bias_rad", "noise", "quant", "dropout_p"):
+            elif spec.kind in ("encoder", "sensor") and key in SENSOR_KEYS:
                 obs_fx[key] = float(value)
-            elif spec.kind == "camera" and key in ("blur_px", "exposure", "dead_px_frac"):
+            elif spec.kind == "camera" and key in ("blur_px", "exposure", "dead_px_frac", "shift_px"):
                 cam_fx[key] = float(value)
             elif try_physics(self.env, spec.name, key, value):
                 continue
@@ -251,6 +276,10 @@ class WearEnv(EnvWrapper):
                 self._dead[list(spec.action)] = float(value)
             else:
                 self.unsupported.add(f"{spec.name}.{key}")
+        if thermal.get("thermal_derate"):
+            for i in spec.action:
+                self._thermal[i] = (thermal["thermal_derate"], max(thermal.get("thermal_tau_s", 60.0), 1e-3))
+                self._heat[i] = 0.0
         if obs_fx:
             self._obs_fx.append((spec, obs_fx))
         if cam_fx:
@@ -282,6 +311,15 @@ class WearEnv(EnvWrapper):
             a = a * self._gain
             a = np.clip(a, -self._limit, self._limit)
             a = np.where(np.abs(a) < self._dead, 0.0, a)
+        if self._thermal:
+            dt = float(getattr(self.env, "dt", None) or 0.05)
+            for i, (derate, tau) in self._thermal.items():
+                if i >= a.size:
+                    continue
+                # load heats the motor; a hot motor is derated (normalized temperature 0 cold .. 1 hot)
+                self._heat[i] += min(1.0, dt / tau) * (min(a[i] * a[i], 1.0) - self._heat[i])
+                lim = (self._limit[i] if self._limit is not None and i < self._limit.size else 1.0) * (1 - derate * self._heat[i])
+                a[i] = float(np.clip(a[i], -lim, lim))
         for i in self._zero:
             if i < a.size:
                 a[i] = 0.0
@@ -302,8 +340,17 @@ class WearEnv(EnvWrapper):
             for i, (key, sl) in enumerate(state_slices(spec, obs)):
                 v = np.asarray(obs[key], dtype=np.float64).reshape(-1).copy()
                 part = v[sl]
+                if i == 0 and fx.get("scale"):
+                    part = part * fx["scale"]
                 if i == 0 and fx.get("bias_rad"):
                     part = part + fx["bias_rad"]
+                if i == 0 and fx.get("bias_walk"):
+                    dt = float(getattr(self.env, "dt", None) or 0.05)
+                    w = self._walk.setdefault((spec.name, key), np.zeros(part.shape))
+                    w += self._rng.normal(0.0, fx["bias_walk"] * math.sqrt(dt), part.shape)
+                    part = part + w
+                if fx.get("saturation"):
+                    part = np.clip(part, -fx["saturation"], fx["saturation"])
                 if fx.get("noise"):
                     part = part + self._rng.normal(0.0, fx["noise"], part.shape)
                 if i == 0 and fx.get("quant"):
@@ -334,6 +381,13 @@ def degrade_image(img: np.ndarray, fx: dict[str, float], rng: np.random.Generato
             out = (np.take(c, range(k, k + n), axis=axis) - np.take(c, range(0, n), axis=axis)) / k
     if fx.get("exposure"):
         out = out * (2.0 ** fx["exposure"])
+    shift = int(round(fx.get("shift_px", 0.0)))
+    if shift and out.ndim >= 2:  # camera mount drift: the scene moves sideways in the frame
+        out = np.roll(out, shift, axis=1)
+        if shift > 0:
+            out[:, :shift] = out[:, shift:shift + 1]
+        else:
+            out[:, shift:] = out[:, shift - 1:shift]
     if fx.get("dead_px_frac"):
         mask = rng.random(out.shape[:2]) < fx["dead_px_frac"]
         out[mask] = 0.0

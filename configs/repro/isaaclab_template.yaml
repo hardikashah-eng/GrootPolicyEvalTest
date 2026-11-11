@@ -1,0 +1,25 @@
+# Template for an Isaac Lab twin and a GR00T checkpoint. NOT run in CI (needs a GPU and Isaac Sim).
+# Knob names must match the `param_setters` your Isaac Lab adapter exposes (see envs/isaaclab.py).
+env: "isaaclab:Isaac-Stack-Cube-Franka-IK-Rel-v0"
+env_args:
+  param_setters: my_project.twin:PARAM_SETTERS   # name -> function(env, value)
+  state_setter: my_project.twin:set_state         # needed for open-loop replay of recorded actions
+policy: "groot://localhost:5555"
+policy_args:
+  action_keys: ["action.arm", "action.gripper"]
+repeats: 3
+seed_jitter: 8
+latency_mode: "trace:traces/real"   # make the twin feel the robot's recorded inference latency
+during_inference: continue
+knobs:
+  joint_friction: [0.0, 0.05, 0.1]
+  actuator_stiffness_scale: [0.7, 1.0, 1.3]
+  object_mass_scale: [0.8, 1.0, 1.5]
+  camera_latency_steps: [0, 1, 2]
+  latency_mode: ["fixed:0", "trace:traces/real"]
+knob_repeats: 2
+knob_seed_jitter: 3
+max_knob_settings: 48
+mode_aliases:
+  dropped_cube: drop
+  grasp_failed: missed_grasp
