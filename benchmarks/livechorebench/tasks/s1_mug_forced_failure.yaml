@@ -6,6 +6,8 @@ scene:
   objects:
     mug: {usd: assets/mug_ceramic_a.usd, real_sku: MUG-A-350ML, mass_kg: 0.32}
     rack: {usd: assets/dish_rack_b.usd, real_sku: RACK-B, fixed: true}
+  regions:  # boxes in the named object's frame (metres); both adapters compute "inside" from these
+    rack.slots: {frame: rack, min: [-0.20, -0.12, 0.02], max: [0.20, 0.12, 0.25]}
 variation:
   mug.xy_m: {uniform: [[-0.10, -0.10], [0.10, 0.10]]}
   mug.yaw_deg: {uniform: [-180, 180]}
@@ -22,3 +24,7 @@ success:
 subgoals:
   - {name: in_rack, check: {inside: {object: mug, region: rack.slots}}}
 limits: {timeout_s: 150, max_contact_force_n: 40}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 50}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 200}    # every joint: position, velocity, effort

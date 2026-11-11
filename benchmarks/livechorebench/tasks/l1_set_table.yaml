@@ -11,6 +11,13 @@ scene:
     cup_a: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
     cup_b: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
     table_mat: {usd: assets/table_mat_printed.usd, real_sku: MAT-PRINT-2, fixed: true}
+  targets:  # place settings on the printed mat, in the mat's frame (yaw relative to the mat)
+    plate_1: {frame: table_mat, pos: [-0.35, 0.00, 0.01], yaw_deg: 0}
+    plate_2: {frame: table_mat, pos: [0.35, 0.00, 0.01], yaw_deg: 180}
+    fork_1: {frame: table_mat, pos: [-0.35, -0.18, 0.005], yaw_deg: 90}
+    fork_2: {frame: table_mat, pos: [0.35, 0.18, 0.005], yaw_deg: -90}
+    cup_1: {frame: table_mat, pos: [-0.20, 0.15, 0.0]}
+    cup_2: {frame: table_mat, pos: [0.20, -0.15, 0.0]}
 variation:
   cupboard.shelf: {choice: [lower, middle]}
   table.yaw_deg: {uniform: [-10, 10]}
@@ -30,4 +37,9 @@ subgoals:
   - {name: fork_2, check: {within: {object: fork_b, target: fork_2, pos_tol_m: 0.03, yaw_tol_deg: 15}}}
   - {name: cup_1, check: {within: {object: cup_a, target: cup_1, pos_tol_m: 0.03}}}
   - {name: cup_2, check: {within: {object: cup_b, target: cup_2, pos_tol_m: 0.03}}}
+  - {name: looks_set, check: {judge: "Do the two place settings look neat, with nothing knocked over or out of place on the table?"}}
 limits: {timeout_s: 600, max_contact_force_n: 50}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 50}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 200}    # every joint: position, velocity, effort

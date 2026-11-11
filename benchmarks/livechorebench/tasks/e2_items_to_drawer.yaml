@@ -7,7 +7,9 @@ scene:
     item_1: {usd: assets/pool/item_a.usd, real_sku: POOL-A, mass_kg: 0.15}
     item_2: {usd: assets/pool/item_b.usd, real_sku: POOL-B, mass_kg: 0.20}
     item_3: {usd: assets/pool/item_c.usd, real_sku: POOL-C, mass_kg: 0.10}
-    drawer: {usd: assets/drawer_kitchen.usd, real_sku: DRAWER-K1, fixed: true}
+    drawer: {usd: assets/drawer_kitchen.usd, real_sku: DRAWER-K1, fixed: true, joint: drawer_slide, real_joint: drawer_encoder}
+  regions:
+    drawer.volume: {frame: drawer, min: [-0.25, -0.20, -0.12], max: [0.25, 0.20, 0.0]}
 variation:
   items.pool_draw: {choice: [[a, b, c], [d, e, f], [g, h, i], [a, e, j]]}
   items.xy_spread_m: {uniform: [0.10, 0.40]}
@@ -24,3 +26,7 @@ subgoals:
   - {name: item_3_in, check: {inside: {object: item_3, region: drawer.volume}}}
   - {name: drawer_closed, check: {joint_max: {joint: drawer, max: 0.01}}}
 limits: {timeout_s: 240, max_contact_force_n: 60}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 50}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 200}    # every joint: position, velocity, effort

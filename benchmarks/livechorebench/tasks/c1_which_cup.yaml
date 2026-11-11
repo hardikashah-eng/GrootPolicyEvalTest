@@ -30,3 +30,7 @@ scoring:
           - object_at: {object: cup_blue, pos: [0.0, 0.0, 0.9], tol_m: 0.25}
       score: 0.5
 limits: {timeout_s: 120}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 50}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 200}    # every joint: position, velocity, effort

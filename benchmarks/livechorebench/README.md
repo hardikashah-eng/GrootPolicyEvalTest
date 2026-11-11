@@ -1,6 +1,6 @@
 # LiveChoreBench: A Live Real-World Benchmark for Humanoid Robots
 
-*2026-11-10. Design proposal with a runnable starter kit: task specs, a loader and scorer, and tests.*
+*2026-11-10. Design proposal with a runnable starter kit: task specs, a loader and scorer, sim and real-room adapters, an audited AI judge, required three-level logging, and tests.*
 
 ## In this folder
 
@@ -8,7 +8,12 @@
 |---|---|
 | `tasks/*.yaml` | The eight sample tasks from section 2b, one spec each, runnable in sim and in a real room |
 | `livechorebench/spec.py` | Loads and checks specs, samples instances from a seed (sim randomizer and real placement sheet), and scores a finished episode from a world state |
-| `tests/test_specs.py` | Tests: every spec loads; every object exists in both worlds; sampling is seeded and in range; scoring, partial credit and grading are correct; invalid specs are refused |
+| `livechorebench/world.py` | Shared rules that turn poses and readings into the world state: region boxes, targets, stillness, drops, falls, lift height, route progress |
+| `livechorebench/adapters.py` | `IsaacLabAdapter` (reads `env.unwrapped.scene`) and `RealRoomAdapter` (AprilTags or mocap, encoders, scales, robot state, speech log) |
+| `livechorebench/judge.py` | AI judge for yes/no questions sensors can't answer, with any VLM backend, and its audit against human grades |
+| `livechorebench/logs.py` | Required policy, action and joint logs, and the checker that rejects episodes with incomplete logs |
+| `cells/example_cell.yaml` | A real-room cell file: surveyed fixture poses, tag IDs and offsets, scales |
+| `tests/` | Specs load and validate; sampling is seeded; scoring, partial credit and grading are correct; sim and real adapters give the same world and score; the judge parses, abstains and is gated by its human audit; incomplete logs invalidate an episode |
 
 Run the tests:
 
@@ -16,7 +21,7 @@ Run the tests:
 pytest benchmarks/livechorebench
 ```
 
-They are kept apart from the main `tests/` suite and depend only on PyYAML.
+They are kept apart from the main `tests/` suite and depend only on PyYAML and NumPy. The judge's Anthropic backend needs the `anthropic` package; tests use a fake backend.
 
 Use it from a simulator or a real-room runner:
 
@@ -30,7 +35,53 @@ result = score(spec, world_state)   # success, partial credit, per-subgoal resul
 print(placement_sheet(spec, [42, 43, 44]))
 ```
 
-The world-state format is documented at the top of `spec.py`. A simulator adapter and a real-room adapter each produce it, and the same scoring code runs on both.
+The world-state format is documented at the top of `spec.py`. Both adapters produce it, and the same scoring code runs on both.
+
+### Adapters: sim state or real sensors to the scorer
+
+```python
+from livechorebench.adapters import IsaacLabAdapter, RealRoomAdapter
+
+sim = IsaacLabAdapter(spec, env_index=0)            # one per parallel env
+world = sim.read(env, t=env_time)                    # call every control tick
+
+real = RealRoomAdapter(spec, "benchmarks/livechorebench/cells/example_cell.yaml")
+world = real.update({"t": 12.3, "tags": tag_poses, "encoders": {...}, "scales": {...},
+                     "robot": {"base_height_m": 0.81}, "speech": [...]})
+```
+
+The geometry that decides success lives in the spec, not in either adapter: `scene.regions` are boxes in an object's frame (`rack.slots`, `drawer.volume`), `scene.targets` are poses in an object's frame (place settings on the mat), and `scene.route` is the path for progress. Spec loading refuses any region, target or joint a predicate uses but doesn't declare, so a task can't pass in sim on geometry the real room can't measure. The shared `WorldBuilder` computes:
+
+| World field | Sim source | Real source |
+|---|---|---|
+| Object poses, tilt, yaw | `scene[name].data.root_pos_w`, `root_quat_w` | AprilTag (object centre from the tag offset) or mocap; last pose kept while occluded |
+| Fixture poses | Same as objects | Surveyed once into the cell file |
+| `inside` a region | Pose inside the declared box | Same, or a scale under the region whose net weight proves which objects are on it (a closed drawer hides tags) |
+| Joints (drawer slide) | `joint_pos` by the object's `joint` name | Encoder named by the object's `real_joint` |
+| `<object>.height_m`, `route.progress` | From poses | From poses |
+| `stable_s`, `dropped`, `fallen` | Speed of movable objects, fall below 0.2 m from above it, robot base height | Same rules on measured poses and the robot's state estimate |
+| `said` | Robot's speech/text output | Speech log |
+
+### AI judge
+
+Some outcomes aren't instrumented: whether a table *looks* set, or a towel is folded neatly. A spec asks these as yes/no questions with the `judge` predicate (the set-table task has one). Rules:
+
+- **Measured beats judged.** `judge` may appear in subgoals and grades but never in `success`; spec loading refuses it there.
+- **Abstain rather than guess.** The judge answers `true`, `false` or `null` from end-of-episode frames; `null`, or confidence under the threshold, counts as not passed.
+- **Any model.** `Judge(backend)` takes any `backend(prompt, images) -> text`; `anthropic_backend()` is provided.
+- **Audited before trusted.** `agreement(judge, human)` reports agreement with a Wilson interval, Cohen's kappa, coverage, false passes and false fails on human-graded episodes. `audit_gate` lets a judge grade unsupervised only if the agreement lower bound is ≥ 0.85, kappa ≥ 0.7, it answers ≥ 90% of items, and false passes are ≤ 5%.
+
+### Required logging: policy, action and joint level
+
+Every spec declares a `logging` block, and an episode whose logs fail `check_episode_log` does not count. The three levels let any result be traced from the model's input to what every joint did:
+
+| Level | Default rate | Required fields | Why |
+|---|---|---|---|
+| Policy | 10 Hz (every query) | `t, step, model_id, checkpoint_hash, instruction, obs_hash, action_chunk, latency_ms` | Which model and input produced which chunk; re-query and replay |
+| Action | 50 Hz (100 Hz loco) | `t, policy_step, commanded, applied, clipped` | Commanded vs applied after limits and smoothing; links to the policy step |
+| Joint | 200 Hz (500 Hz loco, plus `base_pose`, `foot_contact`) | `t, position, velocity, effort` | What the body actually did; triage and sim-vs-real comparison |
+
+Spec loading requires all three, with minimum rates (1, 10, 50 Hz) and policy ≤ action ≤ joint. The episode checker rejects missing streams or fields, unequal column lengths, non-increasing time, rates below 90% of the declared rate, actions that name an unlogged policy step, and joint logs that don't cover the action span. Gaps over three periods and more than 10% clipped commands are warnings. These logs are what `groot-eval triage` and the twin track consume.
 
 ## Summary
 
@@ -238,8 +289,9 @@ No current benchmark does this. It would make LiveChoreBench the reference for "
 
 ## What is not here yet
 
-- **Adapters:** an Isaac Lab adapter that turns simulator state into the world state, and a real-room adapter for tags, motion capture, scales and encoders.
+- **Live hardware glue:** the adapters take poses and readings; the AprilTag detector, mocap client, scale and encoder drivers, and the ROS 2 node that feeds them are not included. The Isaac Lab adapter is tested against a fake scene, not a running simulator.
+- **Log writer:** the checker defines the format; a recorder (MCAP or LeRobot) that writes it is not included.
 - **Task generator:** the template and LLM generator for monthly releases.
-- **VLM judge:** the judge, and its audit against human grades.
+- **Judge calibration data:** the judge and its audit are here; the human-graded episodes to audit it with are not.
 - **Twin credibility per track:** connecting the twin track to `groot-twin credibility`.
 - **Asset and SKU names:** the ones in the sample specs are placeholders.

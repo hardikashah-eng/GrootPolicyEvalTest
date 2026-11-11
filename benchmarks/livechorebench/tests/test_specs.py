@@ -78,7 +78,9 @@ def test_set_table_tolerances():
     assert score(spec, world)["success"]
     objects["fork_b"]["pos"][0] += 0.05  # 5 cm off: outside the 3 cm tolerance
     r = score(spec, world)
-    assert not r["success"] and r["partial_credit"] == pytest.approx(5 / 6)
+    assert not r["success"] and r["partial_credit"] == pytest.approx(5 / 7)  # 6 placements + judge (no answer)
+    world["judge"] = {spec.subgoals[-1]["check"]["judge"]: True}
+    assert score(spec, world)["partial_credit"] == pytest.approx(6 / 7)
     objects["fork_b"]["pos"][0] -= 0.05
     objects["plate_a"]["yaw_deg"] = 40.0  # rotated too far
     assert not score(spec, world)["success"]
@@ -114,11 +116,16 @@ def test_events_say_how_to_run_them_in_the_real_room():
             assert ev["trigger"] and ev["action"] and len(ev["real"]) > 20
 
 
+LOGGING = {"policy": {"rate_hz": 10}, "action": {"rate_hz": 50}, "joint": {"rate_hz": 200}}
+BOX = {"box": {"usd": "a.usd", "real_sku": "BOX", "mass_kg": 1.0}}
+SHELF = {"shelf": {"usd": "s.usd", "real_sku": "SHELF", "fixed": True}}
+
+
 def minimal(**over):
     base = dict(id="t/x/v1", release="2026-12", track="execute", instruction=["do it"],
                 scene={"objects": {"box": {"usd": "a.usd", "real_sku": "BOX", "mass_kg": 1.0}}},
                 variation={"x": {"uniform": [0, 1]}}, success={"hold_s": 1.0}, subgoals=[],
-                limits={"timeout_s": 10})
+                limits={"timeout_s": 10}, logging=LOGGING)
     base.update(over)
     return TaskSpec(**base)
 
@@ -135,6 +142,22 @@ def minimal(**over):
     ({"track": "self_repair"}, "feedback.text"),
     ({"track": "clarify"}, "said_any"),
     ({"events": [{"trigger": {"t": 1}, "action": {"push": 1}}]}, "real"),
+    # logging is required at all three levels, at sensible rates
+    ({"logging": {}}, "logging is required"),
+    ({"logging": {"policy": {"rate_hz": 10}, "action": {"rate_hz": 50}}}, "logging.joint.rate_hz"),
+    ({"logging": {**LOGGING, "joint": {"rate_hz": 20}}}, "below the minimum"),
+    ({"logging": {**LOGGING, "policy": {"rate_hz": 100}}}, "policy <= action <= joint"),
+    # geometry the adapters need
+    ({"success": {"inside": {"object": "box", "region": "shelf.top"}}}, "not declared in scene.regions"),
+    ({"success": {"within": {"object": "box", "target": "spot", "pos_tol_m": 0.1}}}, "not declared in scene.targets"),
+    ({"scene": {"objects": BOX, "regions": {"r": {"frame": "nowhere", "min": [0, 0, 0], "max": [1, 1, 1]}}}}, "needs frame"),
+    ({"scene": {"objects": {**BOX, **SHELF}, "regions": {"r": {"frame": "shelf", "min": [0, 0, 1], "max": [1, 1, 0]}}}},
+     "min > max"),
+    ({"success": {"joint_max": {"joint": "box", "max": 0.1}}}, "joint .* needs an object with joint"),
+    ({"success": {"joint_min": {"joint": "route.progress", "min": 0.5}}}, "scene.route is not declared"),
+    # the AI judge never decides success on its own, and asks yes/no questions
+    ({"success": {"judge": "Is it done?"}}, "measured, not judged"),
+    ({"subgoals": [{"name": "j", "check": {"judge": "tidy"}}]}, "yes/no question"),
 ])
 def test_validation_refuses_specs_that_cannot_run_in_both_worlds(bad, msg):
     validate(minimal())
