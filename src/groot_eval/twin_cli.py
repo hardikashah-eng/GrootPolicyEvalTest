@@ -2,6 +2,8 @@
 
 * ``repro``          reproduce failed runs in the twin and score the twin on them
 * ``metrics``        tier-1 twin usefulness metrics from a table of sim and real results
+* ``credibility``    twin credibility per scenario class, and a twin certificate for this robot profile
+* ``cert-check``     may a sim result in this scenario class stand in for robot runs?
 * ``convert-check``  HDF5 -> LeRobot conversion fidelity gates (C0-C4)
 * ``convert``        reference HDF5 -> LeRobot converter (to compare a production pipeline against)
 * ``convert-sidecar`` keep the sim-only HDF5 data (initial_state, states) next to a LeRobot dataset
@@ -177,6 +179,55 @@ def cmd_metrics(a: argparse.Namespace) -> int:
     return 0
 
 
+# -- credibility ---------------------------------------------------------------------------
+def cmd_credibility(a: argparse.Namespace) -> int:
+    from groot_eval import credibility as cr
+
+    rows = cr.read_rows(a.results)
+    if not rows:
+        print(f"no rows in {a.results}")
+        return 2
+    th = {k: float(v) for k, v in _kv(a.threshold).items()}
+    result = cr.assess(rows, class_column=a.class_column, gate=a.gate, thresholds=th)
+    profile = None
+    if a.profile:
+        from groot_eval.profiles import resolve_profile
+
+        prof = resolve_profile(a.profile)
+        profile = {"robot_id": prof.robot_id, "name": prof.name or prof.robot_id, "version": prof.version,
+                   "status": prof.status, "hash": prof.content_hash}
+        if prof.status != "approved":
+            print(f"  warning: profile {prof.robot_id} v{prof.version} is {prof.status}, not approved")
+    cert = cr.make_certificate(result, a.twin, a.twin_version, profile, a.valid_days,
+                               a.decision or None) if a.twin_version else None
+    out = Path(a.out)
+    _write(out / "credibility.json", json.dumps(result, indent=2, default=lambda x: None))
+    _write(out / "credibility.md", cr.credibility_markdown(result, cert))
+    if cert:
+        _write(out / "twin_certificate.json", json.dumps(cert, indent=2, default=lambda x: None))
+    for cls, m in result["classes"].items():
+        print(f"  {cls:24s} {m['verdict']:12s} policies {m['policies']}")
+    missing = [c for c in a.require or [] if result["classes"].get(c, {}).get("verdict") != "trusted"]
+    if missing:
+        print(f"GATE FAIL: not trusted for required class(es): {', '.join(missing)}")
+        return 1
+    return 0
+
+
+def cmd_cert_check(a: argparse.Namespace) -> int:
+    from groot_eval import credibility as cr
+
+    cert = json.loads(Path(a.certificate).read_text(encoding="utf-8"))
+    phash = None
+    if a.profile:
+        from groot_eval.profiles import resolve_profile
+
+        phash = resolve_profile(a.profile).content_hash
+    ok, why = cr.check_certificate(cert, a.scenario_class, phash, a.twin_version, a.allow_provisional)
+    print(("OK: " if ok else "NO: ") + why)
+    return 0 if ok else 1
+
+
 # -- conversion ----------------------------------------------------------------------------
 def cmd_convert_check(a: argparse.Namespace) -> int:
     from groot_eval import conversion_fidelity as cf
@@ -296,6 +347,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-mmrv", type=float, help="exit 1 if MMRV exceeds this")
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_metrics)
+
+    sp = sub.add_parser("credibility", help="twin credibility per scenario class, and a twin certificate")
+    sp.add_argument("results", help="CSV: policy, domain (sim|real), scenario_class, success | successes,trials, [scenario_id]")
+    sp.add_argument("--class-column", default="scenario_class", help="column that names the scenario class")
+    sp.add_argument("--gate", type=float, help="success-rate bar: also score pass/fail decision agreement")
+    sp.add_argument("--threshold", action="append", metavar="K=V", help="override a threshold, e.g. max_mmrv=0.05")
+    sp.add_argument("--twin", default="twin", help="twin name for the certificate")
+    sp.add_argument("--twin-version", help="twin version; writes twin_certificate.json")
+    sp.add_argument("--profile", help="robot profile the evidence was taken on: path or registry:<root>:<robot>@approved")
+    sp.add_argument("--valid-days", type=int, default=90, help="certificate lifetime")
+    sp.add_argument("--decision", action="append", help="decision the certificate covers (repeatable)")
+    sp.add_argument("--require", action="append", help="exit 1 unless this class is trusted (repeatable)")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_credibility)
+
+    sp = sub.add_parser("cert-check", help="may a sim result in this scenario class stand in for robot runs?")
+    sp.add_argument("certificate", help="twin_certificate.json")
+    sp.add_argument("--class", dest="scenario_class", required=True)
+    sp.add_argument("--profile", help="the robot's current profile: refuse if it differs from the certified one")
+    sp.add_argument("--twin-version", help="the twin version in use: refuse if it differs")
+    sp.add_argument("--allow-provisional", action="store_true", help="accept provisional classes too")
+    sp.set_defaults(func=cmd_cert_check)
 
     sp = sub.add_parser("convert-check", help="HDF5 -> LeRobot conversion fidelity (visual and actuator)")
     sp.add_argument("--hdf5", required=True)
