@@ -583,6 +583,47 @@ def cmd_wear_fit(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dist(a: argparse.Namespace) -> int:
+    from groot_eval import distributional as ds
+
+    ep_a = ds.load_episodes(a.run)
+    tts_a = ds.time_to_success(ep_a, a.dt, a.horizon)
+    payload: dict[str, Any] = {"dt": a.dt, "a": {"run": a.run, "time_to_success": tts_a}}
+    tts_b = cmp = None
+    if a.vs:
+        ep_b = ds.load_episodes(a.vs)
+        tts_b = ds.time_to_success(ep_b, a.dt, a.horizon if a.horizon is not None else tts_a["horizon_s"])
+        cmp = ds.compare(ep_a, ep_b, a.dt, a.horizon)
+        payload["b"] = {"run": a.vs, "time_to_success": tts_b}
+        payload["comparison"] = cmp
+    limits = None
+    if a.limits:
+        lim = yaml.safe_load(Path(a.limits).read_text(encoding="utf-8"))
+        limits = (lim["lower"], lim["upper"])
+    rng = tuple(float(x) for x in a.action_range.split(",")) if a.action_range else None
+    th = {k: float(v) for k, v in _kv(a.threshold).items()} if a.threshold else {}
+    safety: dict[str, Any] = {}
+    for name, tr in (("A", a.trace), ("B", a.trace_b)):
+        if tr:
+            rows = ds.safety_from_trace(tr, a.dt, limits, rng, a.metric)  # type: ignore[arg-type]
+            safety[name] = ds.safety_summary(rows, th)
+    if safety:
+        payload["safety"] = safety
+    out = Path(a.out)
+    _write(out / "dist.json", json.dumps(payload, indent=2, default=lambda x: None))
+    _write(out / "dist.md", ds.dist_markdown("A", tts_a, tts_b, "B", cmp, safety))
+    print(f"A: success {tts_a['success_rate']:.0%}, median time to success {tts_a['median_s']:.2f}, RMST {tts_a['rmst_s']:.2f}")
+    if cmp:
+        print(f"B vs A: {cmp['verdict']} (RMST {cmp['rmst_diff_s']:+.2f}, McNemar p {cmp['mcnemar_p']:.3g})")
+    if a.gate:
+        over = [f"{n}:{k}" for n, s in safety.items() for k, m in s["metrics"].items() if m["over"]]
+        if (cmp and cmp["verdict"] == "B worse") or over:
+            print("GATE FAIL: " + ("B is worse than A; " if cmp and cmp["verdict"] == "B worse" else "")
+                  + (f"safety limits exceeded ({', '.join(over)})" if over else ""))
+            return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="groot-eval", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -806,6 +847,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--confidence", type=float, default=0.95)
     sp.add_argument("--expected", type=float, default=0.5)
     sp.set_defaults(func=cmd_plan)
+
+    sp = sub.add_parser("dist", help="time-to-success distributions, safety metrics, and a paired comparison of two runs")
+    sp.add_argument("run", help="run directory with episodes.jsonl (A)")
+    sp.add_argument("--vs", help="second run on the same scenarios (B), for a paired comparison")
+    sp.add_argument("--dt", type=float, default=1.0, help="control period in seconds (default 1: times are in steps)")
+    sp.add_argument("--horizon", type=float, help="RMST horizon, same unit as times (default: longest episode)")
+    sp.add_argument("--trace", help="trace of run A, for safety metrics")
+    sp.add_argument("--trace-b", help="trace of run B, for safety metrics")
+    sp.add_argument("--limits", help="YAML with `lower:` and `upper:` per state dimension, for time near limits")
+    sp.add_argument("--action-range", help="lo,hi of the command range, for actuator saturation")
+    sp.add_argument("--metric", action="append", help="extra per-step metric column to report (e.g. contact_force)")
+    sp.add_argument("--threshold", action="append", metavar="K=V", help="safety limit, e.g. max_jump=0.3, max_contact_force=40")
+    sp.add_argument("--gate", action="store_true", help="exit 1 if B is worse than A or any safety limit is exceeded")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_dist)
     return p
 
 
