@@ -1,0 +1,18 @@
+# Hardware bridge config (groot-robot bridge --config configs/bridge/shadow.yaml).
+mode: shadow            # shadow: watch the robot's own controller; mirror: the bridge sends the commands
+resync_every: null      # put the twin back into the robot's state every N ticks (null = only at the start)
+compare_exclude: []     # state keys not compared, e.g. [target]
+command_mask: null      # mirror only: action indices the bridge drives; the robot's controller keeps the rest
+max_ticks: 1000
+tick_timeout_s: 0.1     # wait this long for each robot sample
+watchdog:
+  max_error:            # |twin - robot| per element, in the signal's units
+    joint_pos: 0.25     # rad
+    joint_vel: 3.0      # rad/s
+  consecutive: 3        # ticks over the limit before tripping
+  max_missing: 3        # consecutive ticks without a robot sample
+  max_stale_s: 0.25     # gap in the robot clock
+  state_limits: {}      # e.g. {joint_pos: [-2.8, 2.8]}
+  max_command_step: null  # mirror: largest command change per tick
+  on_trip: hold         # what safe_stop asks the robot to do: hold or stop
+  stop_on_trip: null    # default: stop in mirror mode, keep watching in shadow mode

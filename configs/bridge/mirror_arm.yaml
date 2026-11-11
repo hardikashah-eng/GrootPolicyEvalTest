@@ -1,0 +1,14 @@
+# Mirror mode on the hardware: the bridge drives the arm joints only and stops on the first trip.
+mode: mirror
+resync_every: 20
+command_mask: [0, 1, 2]   # action indices the bridge sends; the robot's controller keeps the others
+max_ticks: 1500
+tick_timeout_s: 0.05
+watchdog:
+  max_error: {joint_pos: 0.15, joint_vel: 2.0}
+  consecutive: 3
+  max_missing: 2
+  max_stale_s: 0.1
+  state_limits: {joint_pos: [-2.6, 2.6]}
+  max_command_step: 0.3
+  on_trip: hold

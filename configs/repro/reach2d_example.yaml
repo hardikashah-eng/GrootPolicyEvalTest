@@ -1,0 +1,25 @@
+# Failure reproduction in the digital twin: `groot-twin repro <failed runs> --config this.yaml --out runs/repro`
+# Starting points, not validated values. See docs/twin-failure-repro.md.
+env: reach2d
+env_args: {}
+policy: pd                 # the checkpoint that failed: groot://host:port for a GR00T server
+policy_args: {}
+repeats: 5                 # identical re-runs on the failing seed (non-determinism check)
+seed_jitter: 10            # neighbouring seeds, same parameters (knife edge or region?)
+min_same_mode_rate: 0.5    # reproduced = at least half the twin runs fail the same way
+min_fail_rate: 0.3
+divergence_threshold: 0.5  # replay: error, in units of the signal's spread, that counts as diverged
+replay: true
+# Twin fidelity knobs searched when the baseline twin does not reproduce a failure.
+knobs:
+  actuator_gain: [0.6, 1.0, 1.5, 2.0, 3.0]
+  action_delay: [0, 1, 2, 3, 5]
+  friction: [0.2, 0.6, 1.2]
+knob_repeats: 3
+knob_seed_jitter: 5
+max_knob_settings: 64
+# Labels differ between the robot's logs and the twin? Map them here.
+mode_aliases: {}
+# Extend the failure-mode -> knob suggestions used when `knobs` is empty.
+knob_hints:
+  collision: [action_delay, latency_mode, sensor_noise]

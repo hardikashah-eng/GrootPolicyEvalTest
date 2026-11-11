@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 780" width="1200" height="780" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <marker id="arrowg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f855a"/>
+    </marker>
+    <style>
+      .title { font-size: 22px; font-weight: 700; fill: #1a202c; }
+      .sub { font-size: 13px; fill: #4a5568; }
+      .h { font-size: 15px; font-weight: 700; fill: #1a202c; }
+      .t { font-size: 12.5px; fill: #2d3748; }
+      .s { font-size: 11.5px; fill: #4a5568; }
+      .mono { font-family: Menlo, Consolas, monospace; font-size: 11.5px; fill: #2d3748; }
+      .lane { fill: #ffffff; stroke: #a0aec0; stroke-width: 1; }
+      .flow { stroke: #4a5568; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .back { stroke: #2f855a; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#arrowg); }
+      .out { stroke: #718096; stroke-width: 1.4; fill: none; stroke-dasharray: 3 3; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="780" fill="#f7fafc"/>
+  <text x="40" y="44" class="title">Test rig: between the sensors, the controller and the robot</text>
+  <text x="40" y="68" class="sub">Every controller input is its own stream. The rig decides when each message arrives, how old it is, and what is wrong with it;</text>
+  <text x="40" y="86" class="sub">the controller under test cannot tell a real sensor from a replayed or simulated one. One run seed makes every run repeat exactly.</text>
+
+  <!-- Sources -->
+  <text x="40" y="128" class="h">1  Sources, per topic</text>
+  <rect x="40" y="140" width="240" height="96" rx="10" fill="#ebf8ff" stroke="#3182ce" stroke-width="1.5"/>
+  <text x="56" y="164" class="h" fill="#2b6cb0">live</text>
+  <text x="56" y="184" class="t">real cameras, IMU, force/torque</text>
+  <text x="56" y="202" class="t">any ROS 2 topic (ros_topic:)</text>
+  <text x="56" y="220" class="s">device driver or callable</text>
+
+  <rect x="40" y="252" width="240" height="96" rx="10" fill="#faf5ff" stroke="#805ad5" stroke-width="1.5"/>
+  <text x="56" y="276" class="h" fill="#6b46c1">replay</text>
+  <text x="56" y="296" class="t">a recorded trace or session</text>
+  <text x="56" y="314" class="t">matched by seed, restamped to now</text>
+  <text x="56" y="332" class="s">real data fed back in, as it happened</text>
+
+  <rect x="40" y="364" width="240" height="96" rx="10" fill="#f0fff4" stroke="#38a169" stroke-width="1.5"/>
+  <text x="56" y="388" class="h" fill="#276749">synthetic</text>
+  <text x="56" y="408" class="t">plant state (twin / mock hardware)</text>
+  <text x="56" y="426" class="t">signals: constant, sine, step, noise</text>
+  <text x="56" y="444" class="s">for inputs you don't have yet</text>
+
+  <!-- Rig -->
+  <text x="320" y="128" class="h">2  Rig: one publisher per topic</text>
+  <rect x="320" y="140" width="380" height="320" rx="12" fill="#fffaf0" stroke="#dd6b20" stroke-width="2"/>
+  <rect x="336" y="154" width="348" height="40" rx="6" class="lane"/>
+  <text x="348" y="171" class="mono">state.joint_pos   200 Hz</text>
+  <text x="348" y="187" class="s">jitter 0.4 ms · delay 2 ms · max age 25 ms</text>
+  <rect x="336" y="202" width="348" height="40" rx="6" class="lane"/>
+  <text x="348" y="219" class="mono">state.imu         500 Hz</text>
+  <text x="348" y="235" class="s">replayed from the rig session · freeze 0.6–0.9 s</text>
+  <rect x="336" y="250" width="348" height="40" rx="6" class="lane"/>
+  <text x="348" y="267" class="mono">video.front        30 Hz</text>
+  <text x="348" y="283" class="s">live camera · delay 35 ms · 2% drops</text>
+  <rect x="336" y="298" width="348" height="40" rx="6" class="lane"/>
+  <text x="348" y="315" class="mono">state.target       10 Hz</text>
+  <text x="348" y="331" class="s">signal · delay +150 ms for the first second</text>
+
+  <text x="336" y="364" class="t"><tspan font-weight="700">Stream faults:</tspan> drop · freeze · delay · noise · bias</text>
+  <text x="336" y="384" class="t"><tspan font-weight="700">Run seed:</tspan> its own random stream per topic</text>
+  <text x="336" y="404" class="t"><tspan font-weight="700">Clock:</tspan> real (wall time, counts overruns)</text>
+  <text x="380" y="422" class="t">or sim (same schedule at CPU speed, for CI)</text>
+  <text x="336" y="444" class="s">timing can come from the robot's measured profile</text>
+
+  <!-- Assembly -->
+  <text x="740" y="128" class="h">3  Each control tick</text>
+  <rect x="740" y="140" width="200" height="150" rx="12" fill="#ffffff" stroke="#4a5568" stroke-width="1.5"/>
+  <text x="756" y="166" class="h">observation</text>
+  <text x="756" y="188" class="t">latest message per topic</text>
+  <text x="756" y="208" class="t">age of each input</text>
+  <text x="756" y="228" class="t">stale if older than max age</text>
+  <text x="756" y="248" class="t">hold the last command until</text>
+  <text x="756" y="266" class="t">every topic has arrived</text>
+
+  <rect x="980" y="140" width="190" height="150" rx="12" fill="#fff5f5" stroke="#c53030" stroke-width="2"/>
+  <text x="996" y="166" class="h" fill="#9b2c2c">controller</text>
+  <text x="996" y="184" class="h" fill="#9b2c2c">under test</text>
+  <text x="996" y="208" class="t">GR00T policy, a whole-</text>
+  <text x="996" y="226" class="t">body controller, or a</text>
+  <text x="996" y="244" class="t">ros2_control stack</text>
+  <text x="996" y="268" class="s">it only sees what the rig delivers</text>
+
+  <!-- Plant -->
+  <text x="740" y="336" class="h">4  Plant</text>
+  <rect x="740" y="348" width="430" height="112" rx="12" fill="#f0fff4" stroke="#2f855a" stroke-width="2"/>
+  <text x="756" y="374" class="t"><tspan font-weight="700">twin</tspan>: the CPU twins, or Isaac Lab (wear, faults, timing)</text>
+  <text x="756" y="396" class="t"><tspan font-weight="700">mock hardware</tspan>: joints follow commands, like ros2_control</text>
+  <text x="772" y="414" class="t">mock_components (tests the plumbing safely)</text>
+  <text x="756" y="436" class="t"><tspan font-weight="700">real robot</tspan>: through ros2_control, behind the bridge watchdog</text>
+  <text x="772" y="452" class="s">e-stop and the robot's safety controller stay in charge</text>
+
+  <!-- Flows -->
+  <path d="M280,188 L320,188" class="flow"/>
+  <path d="M280,300 L320,300" class="flow"/>
+  <path d="M280,412 L320,412" class="flow"/>
+  <path d="M700,215 L740,215" class="flow"/>
+  <path d="M940,215 L980,215" class="flow"/>
+  <path d="M1075,290 L1075,348" class="flow"/>
+  <text x="1084" y="324" class="s">commands</text>
+  <path d="M740,454 C640,510 260,510 160,462" class="back"/>
+  <text x="330" y="526" class="s" fill="#2f855a">plant state feeds the synthetic / twin topics, so the loop closes through the rig</text>
+
+  <!-- Outputs -->
+  <text x="40" y="582" class="h">5  What comes out</text>
+  <rect x="40" y="596" width="265" height="120" rx="10" fill="#ffffff" stroke="#a0aec0"/>
+  <text x="56" y="620" class="h">trace</text>
+  <text x="56" y="642" class="t">observations as the controller</text>
+  <text x="56" y="660" class="t">saw them, with each input's age</text>
+  <text x="56" y="678" class="t">and stale flag, plus the run seed</text>
+  <text x="56" y="700" class="s">replay, repro and calibrate read it</text>
+
+  <rect x="325" y="596" width="265" height="120" rx="10" fill="#ffffff" stroke="#a0aec0"/>
+  <text x="341" y="620" class="h">compare to ideal</text>
+  <text x="341" y="642" class="t">same seeded scenarios, perfect</text>
+  <text x="341" y="660" class="t">streams: success both ways,</text>
+  <text x="341" y="678" class="t">McNemar, command drift</text>
+  <text x="341" y="700" class="s">catches degradation before failure</text>
+
+  <rect x="610" y="596" width="265" height="120" rx="10" fill="#ffffff" stroke="#a0aec0"/>
+  <text x="626" y="620" class="h">ROS 2 topics</text>
+  <text x="626" y="642" class="t">--ros2-publish /rig puts every</text>
+  <text x="626" y="660" class="t">delivered message on /rig/...</text>
+  <text x="626" y="678" class="t">as fake publishers, on wall time</text>
+  <text x="626" y="700" class="s">no /clock, no use_sim_time on hardware</text>
+
+  <rect x="895" y="596" width="275" height="120" rx="10" fill="#ffffff" stroke="#a0aec0"/>
+  <text x="911" y="620" class="h">seed-check</text>
+  <text x="911" y="642" class="t">same seed twice; first differing</text>
+  <text x="911" y="660" class="t">step and signal if they disagree</text>
+  <text x="911" y="678" class="t">run before any sim/real comparison</text>
+  <text x="911" y="700" class="s">harness noise is not a sim/real gap</text>
+
+  <path d="M40,560 L1170,560" stroke="#cbd5e0" stroke-width="1"/>
+
+  <text x="40" y="748" class="s">groot-robot rig --config configs/rig/arm3_streams.yaml --episodes 30 --seed 7 --record --out runs/rig    ·    docs/rig.md    ·    docs/test-philosophy.md</text>
+</svg>

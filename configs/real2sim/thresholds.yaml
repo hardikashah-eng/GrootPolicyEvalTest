@@ -1,0 +1,29 @@
+# Thresholds for `groot-eval real2sim`. Starting points, not validated limits: tune them to
+# what your task tolerates (a 5 mm camera error matters for peg-in-hole, not for bin picking).
+scene:
+  default_rel_tol: 0.02          # items without their own tol / rel_tol
+kinematics:
+  max_rms_mm: 3.0                # sim FK vs measured end effector
+  max_error_mm: 8.0
+  max_fitted_rms_mm: 1.0         # above this after fitting offsets: the model itself is off
+cameras:
+  max_translation_mm: 10.0       # sim camera vs calibrated pose
+  max_rotation_deg: 1.0
+  max_focal_pct: 2.0
+  max_principal_px: 5.0
+  max_reprojection_px: 3.0       # known points through the sim camera vs detected pixels
+  max_calibration_px: 1.5        # the real calibration's own reprojection (warn above)
+placement:
+  max_paired_position_mm: 20.0   # same named scenario, real vs sim start pose
+  max_paired_yaw_deg: 10.0
+  min_coverage: 0.95             # share of real placements inside the sim's randomization ranges
+  max_w1: 0.5                    # distribution distance, pooled std (warn above)
+  support_tol_mm: 5.0            # measured object centre vs resting on the surface
+  range_margin: 0.0              # fraction of each range accepted outside it
+physics:
+  mass_rel_tol: 0.10
+  friction_rel_tol: 0.20
+  static_friction_rel_tol: 0.20
+  restitution_abs_tol: 0.10
+  max_sim_nrmse: 0.15            # recorded tests reproduced with the sim's values / by your sim
+  max_fit_nrmse: 0.10            # recorded tests reproduced with the fitted values (warn above)

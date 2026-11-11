@@ -15,6 +15,8 @@ Robot policies don't pass or fail a test the way code does. The same checkpoint 
 * **Fault injection:** sensors, motors, joints, gripper and comm bus fail mid-episode, one at a time or several at random over long tasks. Reports say whether the robot finished, stopped safely or did something unsafe, and how fast it reacted.
 * **Skill-focused suites:** one skill, its conditions at min / nominal / max, run one at a time, at every corner and as a Latin hypercube, so interactions show up that random sweeps miss.
 * **Data-fidelity gates (G0–G6):** integrity, contract, timing, physical plausibility, distribution and coverage, dynamics replay and outcome agreement, in order, with thresholds in YAML and CI exit codes, for data moving sim to real or real to sim.
+* **Real-to-sim calibration checks (R1–R5):** measured scene dimensions, robot kinematics (joint zero offsets), camera intrinsics and extrinsics (reprojection of known points), object placement (paired poses, coverage of the sim's ranges, resting on the table, overlaps) and object physics (mass, friction, static friction, restitution from bench tests) against the sim's configuration, with suggested corrections. See [below](#real-to-sim-calibration-checks).
+* **Transfer verification (sim → real, real → sim):** `groot-eval transfer` checks that data or a policy crossing the boundary keeps its fidelity (precision, clipping, bandwidth, columns, metadata, lossless round trips), stays compatible (key order, units, swapped joints, flipped signs, quaternion order, ids) and usable (training, target env, policy), plus direction-specific checks such as robot limits, latency, noise and wear coverage for sim → real and calibration, applied actions and start-state coverage for real → sim. `groot-eval wear-fit` estimates a real robot's effective age and wear. See [docs/transfer-verification.md](docs/transfer-verification.md).
 * **Adapters** for a running **Isaac-GR00T inference server** and for **Isaac Lab** tasks, plus built-in CPU simulators (a point mass and a 3-joint arm with a gripper) so the whole workflow runs on a laptop.
 
 ## Quick start
@@ -24,7 +26,8 @@ uv sync
 uv run python examples/run_demo.py      # every step below, under a minute on a CPU
 uv run python examples/run_sim2real_demo.py   # the sim-to-real loop against a synthetic robot, ~15 s
 uv run python examples/run_robustness_demo.py # aging, DOF loss, faults, skill suite, fidelity gates, ~2 min
-uv run pytest                           # 102 tests
+uv run python examples/run_real2sim_demo.py   # real-to-sim calibration checks on a synthetic cell, a few seconds
+uv run pytest                           # 127 tests
 ```
 
 The reports from that run are checked in under [`docs/sample-reports/`](docs/sample-reports/).
@@ -80,6 +83,9 @@ Success 73.3% [68.1, 78.0] (220/300); failures: {'collision': 77, 'timeout': 3}
 | `groot-eval faults --faults F.yaml` | Fault campaign: success, safe outcome, unsafe events, controlled stops, reaction and recovery, by fault type, component and number of concurrent faults. `--min-safe` / `--max-unsafe` gate. Combine with `--wear --profile`. |
 | `groot-eval suite --config S.yaml` | Skill suite: one-at-a-time, corners and LHS over min / nominal / max conditions. `--min-oat` / `--min-corner` fail on cells significantly below the bar. Combine with `--wear`, `--faults`. |
 | `groot-eval fidelity --sim S --real R` | Data-fidelity gates G0–G6 (`--gates` YAML, `--direction sim2real\|real2sim`, `--env` for replay, `--pairs` for outcomes). Exit 0 pass, 1 fail, 2 a required gate could not run. `--write-manifest DIR` records SHA-256 hashes. |
+| `groot-eval real2sim --bundle B.yaml` | Real-to-sim calibration checks R1–R5 against measurements from the real cell; writes a report and `corrections.yaml`. Exit 0 pass, 1 fail, 2 a required section is missing. |
+| `groot-eval transfer --sim S --real R` | Transfer verification T0–T4: round trip (`--roundtrip ORIG CONV`), compatibility, fidelity, usability (`--env`, `--policy`), direction-specific checks (`--direction`, `--robot` profile, `--wear`). Exit 0 pass, 1 fail, 2 incomplete. |
+| `groot-eval wear-fit TRACE --wear W.yaml` | Real to sim for wear: replay a robot's trace through the worn sim at each age; best-fit age, closest profile and the wear parameters for its digital twin. |
 | `groot-eval sweep ... --wear W --profile P` / `--faults F` | Any sweep on a worn robot or with faults. |
 | `groot-eval plan --margin 0.05` | Episodes needed for a given confidence-interval width. |
 
@@ -223,6 +229,31 @@ No single condition is significant one at a time (the worst level, two steps of 
 
 G0 and G1 are prerequisites: if either fails, the rest are skipped. `--direction` names the side being promoted; problems on the other side only warn. In the demo, a "robot" trace logging joint velocity in deg/s stops at G1. Once fixed, a 3-year-old unit fails G3 (encoder bias puts reported angles past the joint limits), G4 (coverage 92%) and G5 (replay error 1.30). Fitting the sim's global friction brings G5 to 0.49 with the fit pinned at the edge of its range, which G5 flags: per-joint wear is what's missing. A trace compared with itself passes every gate, with a replay error of 0.000. G5 needs the same physics on both sides, so record it with fixed parameters or fit them with `--sysid-config`.
 
+**5. More wear effects.** Besides gain, torque limit, friction, backlash, stiction, range, DOF loss, encoder bias/noise/quantization/dropout, camera blur/exposure/dead pixels and bus latency, profiles can now use `motor.thermal_derate` / `thermal_tau_s` (a motor heats with load and loses torque during long episodes), `encoder|sensor.scale` (gain error), `bias_walk` (IMU-style drift), `saturation` (F/T clipping) and `camera.shift_px` (mount drift). `configs/wear/arm3_profiles_extended.yaml` uses all of them (placeholder values).
+
+**6. Transfer verification and wear calibration** ([docs](docs/transfer-verification.md)). `groot-eval transfer` runs T0 round trip, T1 compatibility, T2 fidelity, T3 usability and T4 direction-specific gates; `groot-eval wear-fit` fits a real robot's effective age by replaying its trace through `WearEnv` at each candidate age (on a synthetic 6000 h Arm3 unit it picks 6000 h out of six ages). `import-real` now keeps every numeric per-step column and the source's `trace_info.json` provenance, which the round-trip gate verifies.
+
+## Real-to-sim calibration checks
+
+The fidelity gates compare recorded behaviour. Before that comparison means anything, the sim's scene has to match the real cell: a camera 15 mm off or an encoder zeroed a degree wrong shows up later as a "physics gap" that no friction tuning can close. `groot-eval real2sim` checks the static and physical setup against measurements from the real cell, in order, and estimates the corrections ([before](docs/sample-reports/real2sim/real2sim_before_SYNTHETIC.md), [after corrections](docs/sample-reports/real2sim/real2sim_after_SYNTHETIC.md), [summary](docs/sample-reports/real2sim/SUMMARY_SYNTHETIC.md)).
+
+| Check | Real measurement | Compared with | Estimates |
+|---|---|---|---|
+| R1 scene | any measured number: table height, object sizes, gravity, control rate | the sim's value, per-item tolerance | the measured value |
+| R2 kinematics | joint angles with the end effector measured externally (laser tracker, mocap, touch probe) | the sim's forward kinematics | joint zero offsets and base shift |
+| R3 cameras | the real calibration, and known 3-D points (checkerboard, AprilTags, a gripper marker) with the pixels the real camera saw | the sim camera: pose, focal length, principal point, resolution, reprojection | a corrected camera pose; flags a real calibration that does not reproject |
+| R4 placement | object start poses in the real cell (operator log or perception) | named sim scenarios (paired), the sim's randomization ranges (coverage, distribution), the table surface, other objects | widened ranges |
+| R5 physics | bench tests: weigh, slide, push, tilt, drop | the sim's mass, friction, static friction, restitution; the recorded tests replayed with the sim's values and, through `sim_rollout`, in your own engine | each parameter with its spread across tests |
+
+```bash
+python examples/run_real2sim_demo.py          # writes a SYNTHETIC bundle with planted errors and runs the check twice
+groot-eval real2sim --bundle demo-output/real2sim/bundle/bundle.yaml --thresholds configs/real2sim/thresholds.yaml --out runs/real2sim
+```
+
+Everything comes from one bundle file (`configs/real2sim/example_bundle.yaml` documents every field). In the demo, every check fails on the first run. The estimates recover the planted values: joint offsets to within 0.02 deg, the camera error as 15.8 mm and 2.03 deg against a planted 15 mm and 2.00 deg, and friction 0.450, restitution 0.350 and mass 0.209 against 0.45, 0.35 and 0.21. After applying `corrections.yaml`, scene, kinematics and camera pass. What still fails is exactly what a sim parameter cannot fix: an operator mis-placement, two perception poses floating 12 mm above the table, one scenario with interpenetrating objects, and an engine that combines friction with the table material. That last one only shows up because `sim_rollout` runs the same bench tests through the simulator (`groot_eval.envs.objects:rollout` here; point it at a function that runs them in Isaac Lab or MuJoCo).
+
+Run order: `real2sim` first, then `fidelity` G0–G6 on recorded traces. The physics estimates use closed-form Coulomb friction and constant restitution, which fit sliding and bouncing boxes. For objects that roll, tip or deform, the model check warns, and the `sim_rollout` comparison is the one to trust.
+
 ## Status and limits
 
 * **Tested here:** everything that runs on a CPU, including statistics, sweeps, attribution, comparison, regression suites, the LeRobot reader and writer, open-loop scoring, correlation, the CLI, and the GR00T adapter against a fake client.
@@ -230,6 +261,7 @@ G0 and G1 are prerequisites: if either fails, the rest are skipped. `--direction
 * The Isaac Lab adapter runs one environment at a time. Batching episodes across Isaac Lab's parallel environments is the obvious next step for throughput.
 * Video decoding for open-loop uses OpenCV seeks, which is simple but slow on long episodes.
 * The sim-to-real example data is **synthetic**. It shows the input format and the analysis, not a real result.
+* Real-to-sim checks are verified on synthetic measurements with known answers, not on a real cell yet. Lens distortion is not modelled (undistort detected points first), and hand-eye calibration is covered only through observation points whose 3-D positions come from forward kinematics.
 * Wear profiles and fault rates are **placeholders**; Arm3 is a teaching model, not an arm. Condition coverage of real datasets per suite cell is not implemented yet; G4 coverage works on state space instead.
 
 ## Layout
@@ -252,7 +284,9 @@ src/groot_eval/
   degradation/       wear profiles + WearEnv, fault schedules + FaultEnv, aging / DOF-loss / fault runners and reports
   suites.py          skill suites: min / nominal / max conditions, one-at-a-time, corners, LHS
   fidelity.py        data-fidelity gates G0-G6, SHA-256 manifests
-  envs/              Reach2D and Arm3 simulators, Isaac Lab adapter
+  real2sim.py        real-to-sim calibration checks R1-R5: scene, kinematics, cameras, placement, object physics
+  transfer.py        sim<->real transfer verification T0-T4: round trip, compatibility, fidelity, usability, direction checks
+  envs/              Reach2D and Arm3 simulators, bench-test object simulator, Isaac Lab adapter
   policies/          reference controllers (incl. naive and fault-tolerant arm IK), action chunking, GR00T server adapter
 ```
 

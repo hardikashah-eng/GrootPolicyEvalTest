@@ -1,0 +1,25 @@
+# Lint settings used by the ruff pre-commit hook.
+target-version = "py310"
+line-length = 120
+src = ["src"]
+
+[lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = [
+  "E501",  # line length: not enforced (formatting is out of scope for now)
+  "E741",  # short math names such as `l` and `I` are idiomatic in the metrics code
+  "B905",  # zip() without strict=: many intentional pairings in numeric code
+  "UP035", "UP037",  # style-only upgrades (typing -> collections.abc, quoted annotations)
+]
+
+# Baseline: findings that existed when the hook was introduced. Remove an entry once the
+# file is fixed; new files and new rules are enforced everywhere else.
+[lint.per-file-ignores]
+"src/groot_eval/analysis.py" = ["B023"]
+"src/groot_eval/conversion_fidelity.py" = ["B007", "B023"]
+"src/groot_eval/gap.py" = ["F541"]
+"src/groot_eval/latency.py" = ["F401"]
+"src/groot_eval/suites.py" = ["B023"]
+"src/groot_eval/trace.py" = ["B007"]
+"src/groot_eval/transfer.py" = ["F541", "UP034"]
+"tests/test_robustness.py" = ["F401"]

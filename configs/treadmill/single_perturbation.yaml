@@ -1,0 +1,16 @@
+# One perturbation per episode on the treadmill, 3-10 s into a 20 s walk (`groot-robot treadmill --config`).
+# Ranges [lo, hi] are drawn uniformly; lists of names are picked from. Trips and slips start at the next
+# touchdown of their side, so they hit early stance every time.
+treadmill:            # belt settings for every scenario (treadmill.* parameters)
+  speed: 0.8
+  mode: fixed
+perturbations:
+  mode: single
+  start_window_s: [3, 10]
+  catalogue:
+    - {type: trip,         side: [left, right], severity: [2, 14],     weight: 2}
+    - {type: slip,         side: [left, right], severity: [0.02, 0.2], duration_s: [0.2, 0.6]}
+    - {type: speed_step,   severity: [-0.3, 0.5],  duration_s: [1, 4]}
+    - {type: split,        side: [left, right], severity: [0.6, 1.5], duration_s: [3, 8]}
+    - {type: incline_step, severity: [-6, 8],      duration_s: [3, 8]}
+    - {type: push,         severity: [-300, 300],  duration_s: [0.1, 0.3]}

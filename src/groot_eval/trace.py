@@ -54,6 +54,7 @@ SCHEMA_VERSION = 1
 TRACE_INFO = "trace_info.json"
 STEP_COLUMNS = ("wall_time", "inference_latency_ms", "chunk_index", "chunk_step", "reward")
 IMAGE_STATS = ("brightness", "contrast", "sharpness", "height", "width", "max_value")
+_LEROBOT_COLUMNS = {"observation.state", "action", "frame_index", "episode_index", "index", "task_index"}
 
 
 def image_stats(frame: Any) -> dict[str, float]:
@@ -429,9 +430,13 @@ def import_real(src: str | Path, out: str | Path, video: bool = False, domain: s
         extra["wall_time"] = frame["wall_time"].to_numpy(dtype=float) if "wall_time" in frame else ts - (ts[0] if n else 0)
         for col, default in (("inference_latency_ms", math.nan), ("chunk_index", -1.0), ("chunk_step", -1.0), ("reward", math.nan)):
             extra[col] = frame[col].to_numpy(dtype=float) if col in frame else np.full(n, default)
-        for col in frame.columns:
-            if col.startswith("image."):
+        for col in frame.columns:  # keep every other per-step scalar (image stats, fault.*, camera_time.*, ...)
+            if col in extra or col in _LEROBOT_COLUMNS:
+                continue
+            try:
                 extra[col] = frame[col].to_numpy(dtype=float)
+            except (TypeError, ValueError):
+                findings.append(Finding("warn", "columns", f"episode {idx}: column {col!r} is not a numeric scalar; not imported"))
         for key in video_keys:
             extra.update(_video_stats(ds, idx, key, n, findings))
         keep = {k: v for k, v in meta.items() if k not in ("episode_index", "tasks", "length")}
@@ -448,7 +453,11 @@ def import_real(src: str | Path, out: str | Path, video: bool = False, domain: s
                                 f"timestamp jitter (std of step period) up to {max(jitter):.2f} ms at {fps:g} Hz"))
     root = write_lerobot_dataset(out, payload, fps=_fps_value(fps or 1.0), modality=ds.modality or None)
     state_keys = [f"state.{k}" for k in (ds.modality.get("state") or {"state": {}})]
-    info = {"schema_version": SCHEMA_VERSION, "domain": domain, "env": env, "policy": policy,
+    src_info_path = Path(src) / "meta" / TRACE_INFO
+    src_info = json.loads(src_info_path.read_text(encoding="utf-8")) if src_info_path.exists() else {}
+    env, policy = env or src_info.get("env", ""), policy or src_info.get("policy", "")
+    info = {**src_info,  # provenance (robot_id, calibration_id, robot_age_hours, action_source, ...) survives re-import
+            "schema_version": SCHEMA_VERSION, "domain": domain, "env": env, "policy": policy,
             "control_dt": 1.0 / fps if fps else None, "fps": fps, "state_keys": state_keys,
             "video_keys": [f"video.{k}" for k in video_keys], "action_dim": int(payload[0]["actions"].shape[1]),
             "episodes": len(payload), "imported_from": str(src)}

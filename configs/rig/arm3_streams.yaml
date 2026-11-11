@@ -1,0 +1,18 @@
+# Rig run on the Arm3 twin: every controller input has its own publisher, rate, jitter and delay,
+# and four stream faults hit mid-episode (`groot-robot rig --config configs/rig/arm3_streams.yaml`).
+control_hz: 50
+duration_s: 4
+clock: sim               # `real` paces everything on the monotonic clock and counts overruns
+plant: {kind: twin, env: arm3}
+policy: arm-ik
+passthrough: true        # plant keys no topic covers reach the controller untouched
+topics:
+  - {key: state.joint_pos, rate_hz: 200, jitter_ms: {kind: normal, mean: 0, std: 0.4}, delay_ms: 2,  max_age_ms: 25}
+  - {key: state.joint_vel, rate_hz: 200, jitter_ms: {kind: normal, mean: 0, std: 0.4}, delay_ms: 2,  max_age_ms: 25}
+  - {key: state.ee_pos,    rate_hz: 30,  jitter_ms: {kind: normal, mean: 0, std: 3},   delay_ms: 35, drop_rate: 0.02}
+  - {key: state.target,    rate_hz: 10,  delay_ms: 60}
+faults:
+  - {topic: state.joint_pos, kind: freeze, start_s: 0.6, duration_s: 0.3}
+  - {topic: state.joint_vel, kind: noise,  start_s: 1.0, duration_s: 0.5, severity: 0.3}
+  - {topic: state.ee_pos,    kind: drop,   start_s: 0.8, duration_s: 0.4}
+  - {topic: state.target,    kind: delay,  start_s: 0.0, duration_s: 1.0, severity: 150}

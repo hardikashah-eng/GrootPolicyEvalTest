@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
 from groot_eval import analysis, report, stats
 from groot_eval.closed_loop import EvalRun, evaluate
@@ -509,6 +510,79 @@ def cmd_fidelity(a: argparse.Namespace) -> int:
     return code
 
 
+def cmd_real2sim(a: argparse.Namespace) -> int:
+    from groot_eval import real2sim
+
+    bundle, base = real2sim.load_bundle(a.bundle)
+    results = real2sim.run_checks(bundle, base, real2sim.load_thresholds(a.thresholds))
+    out = Path(a.out)
+    corr = real2sim.corrections(results)
+    code = real2sim.exit_code(results)
+    _write(out / "real2sim.json", json.dumps({"bundle": str(a.bundle), "exit_code": code, "corrections": corr,
+                                             "checks": [r.to_dict() for r in results]}, indent=2))
+    _write(out / "real2sim.md", real2sim.real2sim_markdown(results, a.bundle, str(bundle.get("name", ""))))
+    _write(out / "corrections.yaml", yaml.safe_dump(corr, sort_keys=False) if corr else "{}\n")
+    for r in results:
+        bad = [f for f in r.findings if f.level == "error"]
+        print(f"  {r.gate:14s} {r.status.upper():5s}" + (f"  {bad[0].check}: {bad[0].detail[:110]}" if bad else ""))
+    print({0: "All checks pass", 1: "CHECK FAIL", 2: "INCOMPLETE: a required section is missing"}[code])
+    return code
+
+
+def cmd_transfer(a: argparse.Namespace) -> int:
+    from groot_eval import transfer
+    from groot_eval.trace import TraceSet
+
+    if not ((a.sim and a.real) or a.roundtrip):
+        raise SystemExit("transfer needs --sim and --real, and/or --roundtrip ORIGINAL CONVERTED")
+    cfg, cfg_direction = transfer.load_config(a.config)
+    direction = a.direction or cfg_direction or "sim2real"
+    env = make_env(a.env, **_kv(a.env_arg)) if a.env else None
+    policy = make_policy(a.policy, **_kv(a.policy_arg)) if a.policy else None
+    wear_profiles = None
+    if a.wear:
+        from groot_eval.degradation import WearConfig
+
+        wear_profiles = WearConfig.load(a.wear).profiles
+    pair = (TraceSet.open(a.roundtrip[0]), TraceSet.open(a.roundtrip[1])) if a.roundtrip else None
+    results = transfer.run_transfer(TraceSet.open(a.sim) if a.sim else None, TraceSet.open(a.real) if a.real else None,
+                                    cfg, direction, env=env, policy=policy, robot=transfer.load_robot(a.robot),
+                                    roundtrip_pair=pair, wear_profiles=wear_profiles)
+    out = Path(a.out)
+    _write(out / "transfer.json", json.dumps(transfer.to_json(results, direction), indent=2, default=str))
+    _write(out / "transfer.md", transfer.transfer_markdown(results, a.sim, a.real, direction))
+    for r in results:
+        bad = [f for f in r.findings if f.level == "error"]
+        print(f"  {r.gate:17s} {r.status.upper():5s}" + (f"  {bad[0].check}: {bad[0].detail[:110]}" if bad else ""))
+    code = transfer.exit_code(results)
+    print({0: "Transfer verified", 1: "GATE FAIL", 2: "INCOMPLETE: a required gate could not run"}[code])
+    return code
+
+
+def cmd_wear_fit(a: argparse.Namespace) -> int:
+    from groot_eval.degradation import WearConfig
+    from groot_eval.degradation.calibrate import fit_age, fit_markdown
+    from groot_eval.degradation.components import probe_components
+    from groot_eval.trace import TraceSet
+
+    cfg = WearConfig.load(a.wear)
+    env_args = _kv(a.env_arg)
+    comps = probe_components(make_env(a.env, **env_args))
+    ages = [float(x) for x in a.ages.split(",")] if a.ages else None
+    fit = fit_age(lambda: make_env(a.env, **env_args), TraceSet.open(a.real), cfg, comps, ages, _kv(a.param), a.episodes)
+    out = Path(a.out)
+    _write(out / "wear_fit.json", json.dumps(fit, indent=2, default=str))
+    _write(out / "wear_fit.md", fit_markdown(fit, a.real, a.env))
+    if not fit["best"]:
+        print("no age could be scored")
+        return 1
+    print(f"Best fit: {fit['best']['age_hours']:g} h (closest profile {fit['closest_profile']}), "
+          f"replay error {fit['best']['score']:.3f}")
+    for n in fit["notes"]:
+        print(f"  - {n}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="groot-eval", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -692,6 +766,40 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--write-manifest", nargs="+", metavar="DIR", help="write SHA-256 manifests for these traces and exit")
     sp.add_argument("--out")
     sp.set_defaults(func=cmd_fidelity)
+
+    sp = sub.add_parser("real2sim", help="calibration checks R1-R5: scene, kinematics, cameras, object placement, object physics")
+    sp.add_argument("--bundle", required=True, help="calibration bundle YAML (configs/real2sim/example_bundle.yaml)")
+    sp.add_argument("--thresholds", help="thresholds YAML (configs/real2sim/thresholds.yaml)")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_real2sim)
+
+    sp = sub.add_parser("transfer", help="sim<->real transfer verification: fidelity, compatibility, usability, "
+                                         "direction-specific checks, round trip")
+    sp.add_argument("--sim", help="simulation trace")
+    sp.add_argument("--real", help="real-robot trace")
+    sp.add_argument("--direction", choices=["sim2real", "real2sim"], help="which side is being promoted")
+    sp.add_argument("--config", help="thresholds YAML (configs/transfer/defaults.yaml)")
+    sp.add_argument("--robot", help="robot profile YAML with the hardware's limits (configs/robots/*.yaml)")
+    sp.add_argument("--env", help="target env: are keys, widths, action size and ranges accepted? (e.g. arm3)")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--policy", help="policy that must consume the promoted observations (e.g. arm-ik)")
+    sp.add_argument("--policy-arg", action="append", metavar="K=V")
+    sp.add_argument("--wear", metavar="YAML", help="wear profiles, to name the profile matching the robot's age")
+    sp.add_argument("--roundtrip", nargs=2, metavar=("ORIGINAL", "CONVERTED"),
+                    help="the same episodes before and after a conversion: verify nothing changed")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_transfer)
+
+    sp = sub.add_parser("wear-fit", help="real to sim: estimate a robot's effective age and wear from its trace")
+    sp.add_argument("real", help="real-robot trace (recorded actions are replayed in the worn sim)")
+    sp.add_argument("--env", default="arm3")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--wear", required=True, metavar="YAML", help="wear profiles (configs/wear/*.yaml)")
+    sp.add_argument("--ages", help="comma-separated candidate ages in hours (default: profiles + a grid to end of life)")
+    sp.add_argument("--param", action="append", metavar="K=V", help="fixed sim parameter for every replay")
+    sp.add_argument("--episodes", type=int, help="replay only the first N episodes")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_wear_fit)
 
     sp = sub.add_parser("plan", help="how many episodes for a given confidence interval width")
     sp.add_argument("--margin", type=float, default=0.05)

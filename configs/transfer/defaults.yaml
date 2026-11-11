@@ -1,0 +1,34 @@
+# Transfer-verification thresholds (`groot-eval transfer`). Starting points: tune them on your own data.
+direction: sim2real            # the side being promoted (sim2real: sim data/policy -> robot; real2sim: robot logs -> sim)
+gates:
+  T0_roundtrip:                # only with --roundtrip ORIGINAL CONVERTED
+    required: false
+    max_rel_error: 1.0e-4      # largest allowed change, as a fraction of each signal's std (float32 storage is ~1e-7)
+  T1_compatibility:
+    required: true
+    permutation_margin: 0.5    # flag dims i,j as swapped if swapping cuts their distribution distance below this share
+    min_response_corr: 0.3     # an action counts as driving a state if |corr(a_t, s_t+1 - s_t)| >= this on the reference
+    max_gain_ratio: 3.0        # warn if the same command moves the state more than this many times as much (or 1/x)
+  T2_fidelity:
+    required: true
+    max_levels: 200            # a moving signal with fewer distinct levels than this across its range is quantized
+    level_ratio: 0.2           # ...and fails only if it is this much coarser than the reference side
+    max_clipped_frac: 0.02     # share of samples piled exactly at min or max that counts as clipping
+    clip_factor: 5.0           # ...and only if this many times the reference side's share
+    min_hf_ratio: 0.2          # warn if the promoted side keeps less than this share of the reference's high-frequency power
+    hf_cut: 0.25               # "high frequency" = above this fraction of the sample rate
+    max_nan_frac: 0.0
+  T3_usability:
+    required: true
+    min_episode_steps: 16      # one action chunk
+    policy_samples: 50         # recorded observations fed to --policy
+    horizon: 8                 # open-loop chunk length for the policy comparison
+    open_loop_episodes: 5
+    max_open_loop_ratio: 3.0   # warn if open-loop action error on the promoted data is this many times the reference's
+  T4_direction:
+    required: true
+    max_latency_gap_steps: 0.5 # sim2real: sim latency may be at most this many steps below the robot's p95
+    max_noise_ratio: 2.0       # sim2real: warn if the robot's reading noise is more than this many times the sim's
+    max_jerk_ratio: 2.0        # sim2real: warn if robot commands change this many times more per step (p95)
+    min_start_coverage: 0.9    # real2sim: share of real start states inside the sim's reset envelope
+    envelope_margin: 0.05

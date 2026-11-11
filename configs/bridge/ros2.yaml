@@ -1,0 +1,8 @@
+# ROS 2 transport (groot-robot bridge --robot ros2:configs/bridge/ros2.yaml). Joint order = state and action order.
+joint_names: [shoulder, elbow, wrist]
+state_topic: /joint_states               # sensor_msgs/JointState
+applied_topic: /groot/applied_command    # std_msgs/Float64MultiArray, the command the robot applied (needed for shadow)
+command_topic: /groot/bridge_command     # std_msgs/Float64MultiArray, mirror-mode commands
+stop_topic: /groot/bridge_stop           # std_msgs/String "<hold|stop>: <reason>" on a watchdog trip
+node_name: groot_bridge
+qos_depth: 10

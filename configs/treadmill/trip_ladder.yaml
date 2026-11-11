@@ -1,0 +1,8 @@
+# Trip severity ladder: only trips, on either belt, from mild to severe (find the recovery limit).
+treadmill:
+  speed: 0.8
+perturbations:
+  mode: single
+  start_window_s: [4, 8]
+  catalogue:
+    - {type: trip, side: [left, right], severity: [1, 16]}

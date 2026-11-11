@@ -1,0 +1,37 @@
+# Pre-commit hooks: lint + type checks.
+# Setup:   pip install pre-commit && pre-commit install
+# Run all: pre-commit run --all-files
+#
+# Existing findings are baselined (per-file-ignores in ruff.toml, the ignore_errors list in
+# mypy.ini) so the hooks pass today and every new file is held to the full rules.
+# Shrink the baselines as files get cleaned up.
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # Python lint (rules and baseline in ruff.toml)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+
+  # Python type check on staged files (settings and baseline in mypy.ini)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.1
+    hooks:
+      - id: mypy
+        args: [--config-file=mypy.ini]
+        additional_dependencies:
+          - numpy>=1.26,<2.3  # numpy 2.3+ stubs need Python 3.12 syntax; the package supports 3.10
+          - pandas-stubs
+          - types-PyYAML

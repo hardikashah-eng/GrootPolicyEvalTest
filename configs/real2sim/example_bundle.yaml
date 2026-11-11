@@ -1,0 +1,50 @@
+# Calibration bundle for `groot-eval real2sim` (template: every field, with units).
+# Tables may be inline (a list of rows) or CSV paths relative to this file.
+# `python examples/run_real2sim_demo.py` writes a complete, runnable SYNTHETIC bundle.
+name: "cell A, UR5e + wrist camera"
+required: [scene, kinematics, cameras, placement, physics]   # a missing required section exits 2
+
+# R1: any measured number vs the sim's value. tol is absolute; rel_tol is a fraction.
+scene:
+  table_height: {sim: 0.75, real: 0.742, tol: 0.003, unit: " m"}
+  gravity:      {sim: 9.81, real: 9.806, unit: " m/s^2"}
+  control_rate: {sim: 50, real: 50, tol: 0, unit: " Hz"}
+
+# R2: recorded joint angles (rad) with the end effector measured externally (m, base frame).
+kinematics:
+  fk: arm3                      # built-in planar arm, or "my_pkg.kinematics:fk" taking q, returning xyz
+  samples: kinematics.csv       # columns q0..qN, x, y[, z]
+  joint_offsets_rad: [0, 0, 0]  # the sim's current zero offsets (optional)
+  base_shift_m: [0, 0]          # the sim's current base offset (optional)
+
+# R3: per camera, the sim's camera config, the real calibration, and known 3-D points (m, base
+# frame) with the pixels where the real camera saw them (checkerboard corners, AprilTags, a
+# marker on the gripper with its position from FK).
+cameras:
+  wrist:
+    sim:  {position: [0.6, 0.0, 0.5], rpy_deg: [-110, 0, 90], fx: 600, fy: 600, cx: 320, cy: 240, width: 640, height: 480}
+    real: {position: [0.6, 0.012, 0.5], rpy_deg: [-110.5, 0.2, 90.4], fx: 604, fy: 603, cx: 318.5, cy: 242.1, width: 640, height: 480}
+    observations: wrist_points.csv   # columns X, Y, Z, u, v
+
+# R4: real object start poses (m, yaw in deg) vs the sim. sim_config: a sweep config whose
+# params include object.<name>.<x|y|z|yaw_deg> ranges; sim_scenarios: named scenarios with
+# fixed object poses, paired with real rows by the `scenario` column.
+placement:
+  real: placements_real.csv     # columns scenario, object, x, y[, z, yaw_deg]
+  sim_config: sim_scene_randomization.yaml
+  sim_scenarios: sim_test_scenarios.yaml
+  support_height: 0.742         # measured table height
+  objects:
+    cube: {height: 0.05, radius: 0.03}
+    cup:  {height: 0.10, radius: 0.04}
+
+# R5: bench tests on each real object, and the values the sim uses.
+#   weigh: {mass}                     slide: {v0, t: [...], x: [...]}  released at v0, x(t)
+#   push:  {force, duration, t, x}    tilt:  {angle_deg} at which it starts to slide
+#   drop:  {h0, bounce_heights: [...]} successive apex heights
+physics:
+  sim_params:
+    cube: {mass: 0.2, friction: 0.3, static_friction: 0.4, restitution: 0.6}
+  tests: physics_tests.yaml
+  sim_rollout: groot_eval.envs.objects:rollout   # or a function that runs each test in your engine
+  sim_rollout_args: {friction_combine: param}
