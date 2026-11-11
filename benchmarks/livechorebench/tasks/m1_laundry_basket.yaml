@@ -6,6 +6,11 @@ scene:
   objects:
     basket: {usd: assets/laundry_basket.usd, real_sku: BASKET-45L, mass_kg: 1.2}
     washer_area: {usd: assets/floor_mark.usd, real_sku: TAPE-MARK, fixed: true}
+  regions:
+    washer_area: {frame: washer_area, min: [-0.50, -0.50, -0.05], max: [0.50, 0.50, 0.80]}
+  route:  # world-frame xy polyline; the doorway is at the corner, half-way along
+    carrier: basket
+    points: [[0.0, 0.0], [3.5, 0.0], [3.5, 3.5]]
 variation:
   basket.load_kg: {uniform: [1.0, 4.0]}
   route.length_m: {uniform: [6.0, 8.0]}
@@ -20,3 +25,7 @@ subgoals:
   - {name: through_door, check: {joint_min: {joint: route.progress, min: 0.5}}}
   - {name: delivered, check: {inside: {object: basket, region: washer_area}}}
 limits: {timeout_s: 180, max_contact_force_n: 80}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 100}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 500, fields: [base_pose, foot_contact]}    # whole body, plus base pose and foot contact

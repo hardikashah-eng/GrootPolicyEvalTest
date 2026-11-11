@@ -14,7 +14,12 @@ World state, as given to :func:`evaluate`::
       "targets": {"plate_1": {"pos": [...], "yaw_deg": 0.0}},
       "stable_s": 2.5,                               # seconds the scene has been still
       "fallen": False, "dropped": [], "said": ["Which cup, the red or the blue one?"],
+      "judge": {"Is the tablecloth smooth?": True},  # answers from the audited AI judge (judge.py)
     }
+
+The world state is built from simulator state or real-room measurements by ``adapters.py``; every region and
+target a predicate uses must be declared in ``scene.regions`` / ``scene.targets`` so both adapters compute it the
+same way. Every spec also declares the episode logging it requires (``logging``; see ``logs.py``).
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ import yaml
 
 TRACKS = ("execute", "self_repair", "clarify", "long_horizon", "disturbance", "loco_manipulation")
 PREDICATES = ("all", "any", "inside", "tilt_deg", "hold_s", "within", "joint_max", "joint_min",
-              "not_fallen", "not_dropped", "said_any", "object_at")
+              "not_fallen", "not_dropped", "said_any", "object_at", "judge")
 VARIATION_KINDS = ("uniform", "choice")
 
 
@@ -53,6 +58,7 @@ class TaskSpec:
     events: list[dict[str, Any]] = field(default_factory=list)
     feedback: dict[str, Any] = field(default_factory=dict)
     scoring: dict[str, Any] = field(default_factory=dict)
+    logging: dict[str, Any] = field(default_factory=dict)
     path: str = ""
 
     @property
@@ -67,7 +73,7 @@ def load(path: str | Path) -> TaskSpec:
         instruction=list(raw["instruction"]), scene=raw.get("scene", {}), variation=raw.get("variation", {}),
         success=raw["success"], subgoals=list(raw.get("subgoals", [])), limits=raw.get("limits", {}),
         events=list(raw.get("events", [])), feedback=raw.get("feedback", {}), scoring=raw.get("scoring", {}),
-        path=str(path),
+        logging=raw.get("logging", {}), path=str(path),
     )
     validate(spec)
     return spec
@@ -90,6 +96,63 @@ def _predicate_kinds(pred: Any) -> list[str]:
             out += _predicate_kinds(p)
         return out
     return [kind]
+
+
+def _predicates(pred: dict[str, Any]) -> list[tuple[str, Any]]:
+    (kind, arg), = pred.items()
+    if kind in ("all", "any"):
+        return [x for p in arg for x in _predicates(p)]
+    return [(kind, arg)]
+
+
+def all_predicates(spec: TaskSpec) -> list[tuple[str, Any]]:
+    """Every leaf predicate in success, subgoals and the graded rubric."""
+    out = _predicates(spec.success)
+    for sg in spec.subgoals:
+        out += _predicates(sg["check"])
+    for r in spec.scoring.get("graded", []) or []:
+        out += _predicates(r["when"])
+    return out
+
+
+def _validate_geometry(spec: TaskSpec) -> None:
+    """Regions and targets must be declared with a frame, so both adapters can compute them."""
+    names = set(spec.objects)
+    regions, targets = spec.scene.get("regions", {}) or {}, spec.scene.get("targets", {}) or {}
+    for rname, r in regions.items():
+        if not isinstance(r, dict) or r.get("frame") not in names or len(r.get("min", [])) != 3 or len(r.get("max", [])) != 3:
+            raise SpecError(f"{spec.id}: region {rname!r} needs frame (an object), min [x,y,z] and max [x,y,z]")
+        if not _le(r["min"], r["max"]):
+            raise SpecError(f"{spec.id}: region {rname!r} has min > max")
+    for tname, tg in targets.items():
+        if not isinstance(tg, dict) or tg.get("frame") not in names or len(tg.get("pos", [])) != 3:
+            raise SpecError(f"{spec.id}: target {tname!r} needs frame (an object) and pos [x,y,z]")
+    route = spec.scene.get("route")
+    if route is not None and (route.get("carrier") not in names or len(route.get("points", [])) < 2):
+        raise SpecError(f"{spec.id}: route needs a carrier object and at least two points")
+    for kind, arg in all_predicates(spec):
+        if kind == "inside":
+            if arg["region"] not in regions:
+                raise SpecError(f"{spec.id}: region {arg['region']!r} is used but not declared in scene.regions")
+            if arg["object"] not in names:
+                raise SpecError(f"{spec.id}: object {arg['object']!r} is not in the scene")
+        elif kind == "within":
+            if arg["target"] not in targets:
+                raise SpecError(f"{spec.id}: target {arg['target']!r} is used but not declared in scene.targets")
+        elif kind in ("joint_min", "joint_max"):
+            j = arg["joint"]
+            if j == "route.progress":
+                if route is None:
+                    raise SpecError(f"{spec.id}: route.progress is used but scene.route is not declared")
+            elif j.endswith(".height_m"):
+                if j[: -len(".height_m")] not in names:
+                    raise SpecError(f"{spec.id}: {j!r} names an object that is not in the scene")
+            else:
+                obj = spec.objects.get(j)
+                if not obj or not obj.get("joint") or not obj.get("real_joint"):
+                    raise SpecError(f"{spec.id}: joint {j!r} needs an object with joint (sim) and real_joint (real)")
+        elif kind == "judge" and (not isinstance(arg, str) or not arg.strip().endswith("?")):
+            raise SpecError(f"{spec.id}: a judge predicate is a yes/no question ending in '?'")
 
 
 def validate(spec: TaskSpec) -> None:
@@ -132,6 +195,12 @@ def validate(spec: TaskSpec) -> None:
         raise SpecError(f"{spec.id}: disturbance tasks need at least one event")
     if spec.track == "clarify" and "said_any" not in _predicate_kinds(spec.success):
         raise SpecError(f"{spec.id}: clarify tasks must score what the robot says (said_any)")
+    if [k for k, _ in _predicates(spec.success) if k == "judge"]:
+        raise SpecError(f"{spec.id}: success must be measured, not judged; use judge only in subgoals or grades")
+    _validate_geometry(spec)
+    from livechorebench.logs import validate_logging
+
+    validate_logging(spec.id, spec.logging)
 
 
 def _le(lo: Any, hi: Any) -> bool:
@@ -218,6 +287,8 @@ def evaluate(pred: dict[str, Any], world: dict[str, Any]) -> bool:
     if kind == "said_any":
         said = " ".join(world.get("said", [])).lower()
         return any(phrase.lower() in said for phrase in arg)
+    if kind == "judge":  # None (abstained or not asked) counts as not passed
+        return world.get("judge", {}).get(arg) is True
     raise SpecError(f"unknown predicate {kind!r}")
 
 

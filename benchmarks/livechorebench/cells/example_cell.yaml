@@ -1,0 +1,42 @@
+# Real-room cell file: what RealRoomAdapter needs on top of the task spec.
+#
+# Survey the fixtures once per cell (tape measure plus a tag board, or the mocap system), mount a tag on each
+# movable object and record where the object's centre is in the tag's frame. Re-survey after moving furniture.
+# Units: metres, degrees, kilograms. Quaternions are [w, x, y, z]. World frame: x forward, y left, z up,
+# origin at the robot's start mark.
+cell: kitchen-a
+surveyed: 2026-11-01
+
+fixtures:  # fixed objects named in the task specs
+  rack: {pos: [0.60, -0.30, 0.90], yaw_deg: 0}
+  drawer: {pos: [0.55, 0.40, 0.75], yaw_deg: 180}       # the drawer box (cabinet frame); its slide is an encoder
+  table_mat: {pos: [1.80, 0.00, 0.75], yaw_deg: 90}
+  coffee_table: {pos: [4.00, 1.50, 0.00], yaw_deg: 0}
+  washer_area: {pos: [3.50, 3.50, 0.00], yaw_deg: 0}
+  person_mark: {pos: [0.00, 0.00, 0.00], yaw_deg: 0}
+
+tags:  # AprilTag 36h11, 40 mm; offset = object centre in the tag's frame
+  mug: {id: 7, offset: [0.0, 0.0, -0.05]}
+  item_1: {id: 11, offset: [0.0, 0.0, -0.03]}
+  item_2: {id: 12, offset: [0.0, 0.0, -0.03]}
+  item_3: {id: 13, offset: [0.0, 0.0, -0.03]}
+  plate_a: {id: 21, offset: [0.0, 0.0, -0.01]}
+  plate_b: {id: 22, offset: [0.0, 0.0, -0.01]}
+  fork_a: {id: 23, offset: [0.0, 0.0, 0.0]}
+  fork_b: {id: 24, offset: [0.0, 0.0, 0.0]}
+  cup_a: {id: 25, offset: [0.0, 0.0, -0.06]}
+  cup_b: {id: 26, offset: [0.0, 0.0, -0.06]}
+  cup_red: {id: 31, offset: [0.0, 0.0, -0.06]}
+  cup_blue: {id: 32, offset: [0.0, 0.0, -0.06]}
+  tray: {id: 41, offset: [0.0, 0.0, -0.01]}
+  cup_on_tray: {id: 42, offset: [0.0, 0.0, -0.06]}
+  basket: {id: 51, offset: [0.0, 0.0, -0.15]}
+
+scales:  # a scale under a region confirms what is in it when tags are occluded (a closed drawer)
+  drawer_scale:
+    region: drawer.volume
+    tare_kg: 1.40
+    tol_kg: 0.02
+    objects: {item_1: 0.15, item_2: 0.20, item_3: 0.10}  # weighed per instance; masses must make subsets distinct
+
+# Encoders are named by each object's real_joint in the task spec (e2: drawer -> drawer_encoder).

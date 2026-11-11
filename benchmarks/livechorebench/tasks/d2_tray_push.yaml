@@ -7,6 +7,9 @@ scene:
     tray: {usd: assets/tray.usd, real_sku: TRAY-40CM, mass_kg: 0.60}
     cup_on_tray: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
     coffee_table: {usd: assets/coffee_table.usd, real_sku: TABLE-CF1, fixed: true}
+  regions:
+    coffee_table.top: {frame: coffee_table, min: [-0.45, -0.30, 0.40], max: [0.45, 0.30, 0.60]}
+    tray.top: {frame: tray, min: [-0.20, -0.15, 0.0], max: [0.20, 0.15, 0.15]}
 variation:
   push.force_n: {uniform: [40, 60]}
   push.side: {choice: [left, right]}
@@ -25,3 +28,7 @@ subgoals:
   - {name: cup_kept, check: {not_dropped: cup_on_tray}}
   - {name: delivered, check: {inside: {object: tray, region: coffee_table.top}}}
 limits: {timeout_s: 120, max_contact_force_n: 80}
+logging:  # required at all three levels; see livechorebench/logs.py
+  policy: {rate_hz: 10}    # every model query: model, checkpoint, instruction, obs hash, action chunk, latency
+  action: {rate_hz: 100}    # every command: commanded vs applied, clipped, which policy step it came from
+  joint: {rate_hz: 500, fields: [base_pose, foot_contact]}    # whole body, plus base pose and foot contact
