@@ -1,0 +1,27 @@
+id: disturbance/tray-carry-push/v1
+release: 2026-12
+track: disturbance
+instruction: ["Carry the tray to the coffee table"]
+scene:
+  objects:
+    tray: {usd: assets/tray.usd, real_sku: TRAY-40CM, mass_kg: 0.60}
+    cup_on_tray: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
+    coffee_table: {usd: assets/coffee_table.usd, real_sku: TABLE-CF1, fixed: true}
+variation:
+  push.force_n: {uniform: [40, 60]}
+  push.side: {choice: [left, right]}
+  route.length_m: {uniform: [3.0, 5.0]}
+events:
+  - trigger: {path_fraction: 0.5}
+    action: {push_torso: {force: push.force_n, side: push.side, duration_s: 0.2}}
+    real: "Padded push sled (or pendulum) set to the same impulse, released when the robot crosses the halfway mark."
+success:
+  all:
+    - inside: {object: tray, region: coffee_table.top}
+    - inside: {object: cup_on_tray, region: tray.top}
+    - not_fallen: true
+subgoals:
+  - {name: no_fall, check: {not_fallen: true}}
+  - {name: cup_kept, check: {not_dropped: cup_on_tray}}
+  - {name: delivered, check: {inside: {object: tray, region: coffee_table.top}}}
+limits: {timeout_s: 120, max_contact_force_n: 80}

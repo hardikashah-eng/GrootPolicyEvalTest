@@ -1,0 +1,23 @@
+id: disturbance/mug-moved-mid-task/v1
+release: 2026-12
+track: disturbance
+instruction: ["Put the mug in the dish rack"]
+scene:
+  objects:
+    mug: {usd: assets/mug_ceramic_a.usd, real_sku: MUG-A-350ML, mass_kg: 0.32}
+    rack: {usd: assets/dish_rack_b.usd, real_sku: RACK-B, fixed: true}
+variation:
+  mug.xy_m: {uniform: [[-0.10, -0.10], [0.10, 0.10]]}
+  move.direction_deg: {uniform: [0, 360]}
+events:
+  - trigger: {gripper_within_m: {object: mug, distance: 0.20}}
+    action: {move_object: {object: mug, distance_m: 0.15, direction: move.direction_deg}}
+    real: "Tracker raises the cue; the operator (or a linear stage) slides the mug 15 cm along the marked path."
+success:
+  all:
+    - inside: {object: mug, region: rack.slots}
+    - tilt_deg: {object: mug, max: 20}
+    - hold_s: 2.0
+subgoals:
+  - {name: in_rack, check: {inside: {object: mug, region: rack.slots}}}
+limits: {timeout_s: 120, max_contact_force_n: 40}
