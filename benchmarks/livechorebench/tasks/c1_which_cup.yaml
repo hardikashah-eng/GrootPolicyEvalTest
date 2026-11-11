@@ -1,0 +1,32 @@
+id: clarify/bring-the-cup/v1
+release: 2026-12
+track: clarify
+instruction: ["Bring me the cup", "Can you hand me the cup?"]
+scene:
+  objects:
+    cup_red: {usd: assets/cup_red.usd, real_sku: CUP-RED, mass_kg: 0.20}
+    cup_blue: {usd: assets/cup_blue.usd, real_sku: CUP-BLUE, mass_kg: 0.20}
+    person_mark: {usd: assets/floor_mark.usd, real_sku: TAPE-MARK, fixed: true}
+variation:
+  cups.swap_sides: {choice: [false, true]}
+  cups.gap_m: {uniform: [0.15, 0.50]}
+success:
+  any:
+    - said_any: ["which cup", "red or the blue", "blue or the red", "which one"]
+    - all:
+        - said_any: ["the nearer", "the closer", "i'll bring the"]
+        - any:
+            - object_at: {object: cup_red, pos: [0.0, 0.0, 0.9], tol_m: 0.25}
+            - object_at: {object: cup_blue, pos: [0.0, 0.0, 0.9], tol_m: 0.25}
+subgoals:
+  - {name: spoke_or_explained, check: {said_any: ["which", "nearer", "closer", "bring the"]}}
+scoring:
+  graded:
+    - {when: {said_any: ["which cup", "red or the blue", "blue or the red", "which one"]}, score: 1.0}
+    - {when: {said_any: ["the nearer", "the closer", "i'll bring the"]}, score: 1.0}
+    - when:
+        any:
+          - object_at: {object: cup_red, pos: [0.0, 0.0, 0.9], tol_m: 0.25}
+          - object_at: {object: cup_blue, pos: [0.0, 0.0, 0.9], tol_m: 0.25}
+      score: 0.5
+limits: {timeout_s: 120}

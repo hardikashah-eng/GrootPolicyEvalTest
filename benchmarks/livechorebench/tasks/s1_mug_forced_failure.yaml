@@ -1,0 +1,24 @@
+id: self_repair/mug-to-rack-slip/v1
+release: 2026-12
+track: self_repair
+instruction: ["Put the mug in the dish rack"]
+scene:
+  objects:
+    mug: {usd: assets/mug_ceramic_a.usd, real_sku: MUG-A-350ML, mass_kg: 0.32}
+    rack: {usd: assets/dish_rack_b.usd, real_sku: RACK-B, fixed: true}
+variation:
+  mug.xy_m: {uniform: [[-0.10, -0.10], [0.10, 0.10]]}
+  mug.yaw_deg: {uniform: [-180, 180]}
+events:
+  - trigger: {first_grasp: mug}
+    action: {set_friction: {object: mug, part: handle, value: 0.05, duration: first_grasp}}
+    real: "Slippery sleeve on the handle; the operator removes it after the first grasp (or nudges the mug free)."
+feedback: {text: "The mug is still on the table.", after: first_failure}
+success:
+  all:
+    - inside: {object: mug, region: rack.slots}
+    - tilt_deg: {object: mug, max: 20}
+    - hold_s: 2.0
+subgoals:
+  - {name: in_rack, check: {inside: {object: mug, region: rack.slots}}}
+limits: {timeout_s: 150, max_contact_force_n: 40}

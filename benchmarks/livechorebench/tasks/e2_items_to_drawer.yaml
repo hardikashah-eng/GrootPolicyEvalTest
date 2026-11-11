@@ -1,0 +1,26 @@
+id: execute/items-to-drawer/v1
+release: 2026-12
+track: execute
+instruction: ["Put the three things on the counter into the drawer and close it", "Clear the counter into the drawer, then shut it"]
+scene:
+  objects:
+    item_1: {usd: assets/pool/item_a.usd, real_sku: POOL-A, mass_kg: 0.15}
+    item_2: {usd: assets/pool/item_b.usd, real_sku: POOL-B, mass_kg: 0.20}
+    item_3: {usd: assets/pool/item_c.usd, real_sku: POOL-C, mass_kg: 0.10}
+    drawer: {usd: assets/drawer_kitchen.usd, real_sku: DRAWER-K1, fixed: true}
+variation:
+  items.pool_draw: {choice: [[a, b, c], [d, e, f], [g, h, i], [a, e, j]]}
+  items.xy_spread_m: {uniform: [0.10, 0.40]}
+  drawer.start_open_m: {uniform: [0.0, 0.05]}
+success:
+  all:
+    - inside: {object: item_1, region: drawer.volume}
+    - inside: {object: item_2, region: drawer.volume}
+    - inside: {object: item_3, region: drawer.volume}
+    - joint_max: {joint: drawer, max: 0.01}
+subgoals:
+  - {name: item_1_in, check: {inside: {object: item_1, region: drawer.volume}}}
+  - {name: item_2_in, check: {inside: {object: item_2, region: drawer.volume}}}
+  - {name: item_3_in, check: {inside: {object: item_3, region: drawer.volume}}}
+  - {name: drawer_closed, check: {joint_max: {joint: drawer, max: 0.01}}}
+limits: {timeout_s: 240, max_contact_force_n: 60}

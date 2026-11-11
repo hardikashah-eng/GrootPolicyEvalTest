@@ -1,0 +1,33 @@
+id: long_horizon/set-table-for-two/v1
+release: 2026-12
+track: long_horizon
+instruction: ["Set the table for two", "Lay two places at the table, please"]
+scene:
+  objects:
+    plate_a: {usd: assets/plate.usd, real_sku: PLATE-26CM, mass_kg: 0.55}
+    plate_b: {usd: assets/plate.usd, real_sku: PLATE-26CM, mass_kg: 0.55}
+    fork_a: {usd: assets/fork.usd, real_sku: FORK-STD, mass_kg: 0.05}
+    fork_b: {usd: assets/fork.usd, real_sku: FORK-STD, mass_kg: 0.05}
+    cup_a: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
+    cup_b: {usd: assets/cup_glass.usd, real_sku: CUP-GLASS, mass_kg: 0.25}
+    table_mat: {usd: assets/table_mat_printed.usd, real_sku: MAT-PRINT-2, fixed: true}
+variation:
+  cupboard.shelf: {choice: [lower, middle]}
+  table.yaw_deg: {uniform: [-10, 10]}
+success:
+  all:
+    - within: {object: plate_a, target: plate_1, pos_tol_m: 0.03, yaw_tol_deg: 15}
+    - within: {object: plate_b, target: plate_2, pos_tol_m: 0.03, yaw_tol_deg: 15}
+    - within: {object: fork_a, target: fork_1, pos_tol_m: 0.03, yaw_tol_deg: 15}
+    - within: {object: fork_b, target: fork_2, pos_tol_m: 0.03, yaw_tol_deg: 15}
+    - within: {object: cup_a, target: cup_1, pos_tol_m: 0.03}
+    - within: {object: cup_b, target: cup_2, pos_tol_m: 0.03}
+    - not_dropped: any
+subgoals:
+  - {name: plate_1, check: {within: {object: plate_a, target: plate_1, pos_tol_m: 0.03, yaw_tol_deg: 15}}}
+  - {name: plate_2, check: {within: {object: plate_b, target: plate_2, pos_tol_m: 0.03, yaw_tol_deg: 15}}}
+  - {name: fork_1, check: {within: {object: fork_a, target: fork_1, pos_tol_m: 0.03, yaw_tol_deg: 15}}}
+  - {name: fork_2, check: {within: {object: fork_b, target: fork_2, pos_tol_m: 0.03, yaw_tol_deg: 15}}}
+  - {name: cup_1, check: {within: {object: cup_a, target: cup_1, pos_tol_m: 0.03}}}
+  - {name: cup_2, check: {within: {object: cup_b, target: cup_2, pos_tol_m: 0.03}}}
+limits: {timeout_s: 600, max_contact_force_n: 50}

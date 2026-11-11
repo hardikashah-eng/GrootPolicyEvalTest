@@ -1,0 +1,22 @@
+id: loco_manipulation/laundry-to-washer/v1
+release: 2026-12
+track: loco_manipulation
+instruction: ["Take the laundry basket to the washer", "Bring the basket over to the washing machine"]
+scene:
+  objects:
+    basket: {usd: assets/laundry_basket.usd, real_sku: BASKET-45L, mass_kg: 1.2}
+    washer_area: {usd: assets/floor_mark.usd, real_sku: TAPE-MARK, fixed: true}
+variation:
+  basket.load_kg: {uniform: [1.0, 4.0]}
+  route.length_m: {uniform: [6.0, 8.0]}
+  threshold.height_m: {uniform: [0.0, 0.02]}
+success:
+  all:
+    - inside: {object: basket, region: washer_area}
+    - not_dropped: any
+    - not_fallen: true
+subgoals:
+  - {name: lifted, check: {joint_min: {joint: basket.height_m, min: 0.10}}}
+  - {name: through_door, check: {joint_min: {joint: route.progress, min: 0.5}}}
+  - {name: delivered, check: {inside: {object: basket, region: washer_area}}}
+limits: {timeout_s: 180, max_contact_force_n: 80}
