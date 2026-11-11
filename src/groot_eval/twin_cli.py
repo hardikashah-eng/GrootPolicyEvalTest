@@ -1,6 +1,7 @@
 """Digital-twin commands: ``groot-twin <command>``.
 
 * ``repro``          reproduce failed runs in the twin and score the twin on them
+* ``triage``         why did a robot run fail: plumbing, timing, actuation, sensing, policy or not modelled
 * ``metrics``        tier-1 twin usefulness metrics from a table of sim and real results
 * ``credibility``    twin credibility per scenario class, and a twin certificate for this robot profile
 * ``cert-check``     may a sim result in this scenario class stand in for robot runs?
@@ -106,6 +107,35 @@ def cmd_repro(a: argparse.Namespace) -> int:
     if a.min_rate is not None and summary["reproduction_ci"][0] < a.min_rate:
         print(f"GATE FAIL: reproduction-rate lower bound {lo:.2f} < {a.min_rate}")
         return 1
+    return 0
+
+
+# -- triage --------------------------------------------------------------------------------
+def cmd_triage(a: argparse.Namespace) -> int:
+    from groot_eval import repro, triage
+    from groot_eval.envs import make_env
+    from groot_eval.policies import make_policy
+
+    cases = repro.load_failures(a.failed, [int(x) for x in a.episodes.split(",")] if a.episodes else None, "real")
+    cases = [c for c in cases if c.has_recording][: a.limit or None]
+    if not cases:
+        print(f"no failed runs with recorded states and actions in {a.failed}")
+        return 2
+    env = make_env(a.env, **_kv(a.env_arg))
+    policy = make_policy(a.policy, **_kv(a.policy_arg)) if a.policy else None
+    cfg = {k: float(v) for k, v in _kv(a.set).items()}
+    for k in ("repeats", "seed_jitter", "max_lag"):
+        if k in cfg:
+            cfg[k] = int(cfg[k])
+    print(f"Triaging {len(cases)} failed run(s) against `{a.env}`" + (f" with policy `{a.policy}`" if a.policy else ""))
+
+    def progress(i: int, r: dict[str, Any]) -> None:
+        print(f"  [{i + 1}/{len(cases)}] {r['case_id']}: {r['failure_reason']} -> {r['cause']} ({r['confidence']})")
+
+    summary = triage.triage_batch(cases, env, policy, cfg, progress)
+    out = Path(a.out)
+    _write(out / "triage.json", triage.to_json(summary))
+    _write(out / "triage.md", triage.triage_markdown(summary))
     return 0
 
 
@@ -339,6 +369,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-rate", type=float, help="exit 1 if the reproduction-rate CI lower bound is below this")
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_repro)
+
+    sp = sub.add_parser("triage", help="why did a robot run fail: plumbing, timing, actuation, sensing, policy, not modelled")
+    sp.add_argument("failed", help="trace / LeRobot dataset of the robot's failed runs, or a failure-record JSON")
+    sp.add_argument("--env", required=True, help="twin env: reach2d | arm3 | isaaclab:<Task> | module:Class")
+    sp.add_argument("--env-arg", action="append", metavar="K=V")
+    sp.add_argument("--policy", help="the policy that ran on the robot (needed for the consistency and closed-loop tests)")
+    sp.add_argument("--policy-arg", action="append", metavar="K=V")
+    sp.add_argument("--episodes", help="comma-separated episode indices (default: every failed one)")
+    sp.add_argument("--limit", type=int, help="at most this many runs")
+    sp.add_argument("--set", action="append", metavar="K=V", help="override a triage setting, e.g. max_lag=10")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_triage)
 
     sp = sub.add_parser("metrics", help="tier-1 twin metrics: correlation, MMRV, calibration, sensitivity, decisions")
     sp.add_argument("results", help="CSV: policy, domain (sim|real), [condition], success | successes,trials, [scenario_id]")
